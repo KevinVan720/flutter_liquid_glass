@@ -38,6 +38,9 @@ class MainApp extends HookWidget {
   Widget build(BuildContext context) {
     final thicknessVisible = useState(true);
 
+    // Add state to track the glass position
+    final glassOffset = useState<Offset>(Offset.zero);
+
     final blend = useValueListenable(blendNotifier);
 
     final chromaticAberration = useValueListenable(chromaticAberrationNotifier);
@@ -90,30 +93,51 @@ class MainApp extends HookWidget {
             return Background(
               child: Stack(
                 children: [
-                  Align(
-                    alignment: Alignment.center,
-                    child: LiquidGlass(
-                        blur: 8,
-                        glassContainsChild: false,
-                        settings: LiquidGlassSettings(
-                          thickness: 30,
-                          lightIntensity: .6,
-                          ambientStrength: 2,
-                          chromaticAberration: 4,
-                          glassColor: Theme.of(
-                            context,
-                          ).colorScheme.surface.withValues(alpha: 0.5),
-                        ),
-                        shape: MorphableShape(
-                          morphableShapeBorder: PolygonShapeBorder(
-                            sides: 6,
-                            cornerRadius: Length(30),
+                  Positioned(
+                    left: glassOffset.value.dx,
+                    top: glassOffset.value.dy,
+                    child: GestureDetector(
+                      onPanUpdate: (details) {
+                        // Get the render box to calculate relative position
+                        final RenderBox renderBox =
+                            context.findRenderObject() as RenderBox;
+                        final size = renderBox.size;
+
+                        final x = glassOffset.value.dx + details.delta.dx;
+                        final y = glassOffset.value.dy + details.delta.dy;
+
+                        // Clamp the values to stay within bounds
+                        glassOffset.value = Offset(
+                          x.clamp(0, size.width),
+                          y.clamp(0, size.height),
+                        );
+                      },
+                      behavior: HitTestBehavior.opaque,
+                      child: LiquidGlass(
+                          blur: 2,
+                          glassContainsChild: false,
+                          settings: LiquidGlassSettings(
+                            thickness: thickness,
+                            lightIntensity: lightIntensityNotifier.value,
+                            ambientStrength: ambientStrengthNotifier.value,
+                            chromaticAberration: chromaticAberration,
+                            glassColor: color.withValues(
+                              alpha: color.a * thickness / 10,
+                            ),
+                            lightAngle: lightAngle,
+                            blend: blend,
                           ),
-                        ),
-                        child: SizedBox(
-                          width: 240,
-                          height: 240,
-                        )),
+                          shape: MorphableShape(
+                            morphableShapeBorder: PolygonShapeBorder(
+                              sides: 6,
+                              cornerRadius: Length(30),
+                            ),
+                          ),
+                          child: SizedBox(
+                            width: 240,
+                            height: 240,
+                          )),
+                    ),
                   ),
                 ],
               ),
@@ -132,29 +156,6 @@ class Background extends HookWidget {
 
   @override
   Widget build(BuildContext context) {
-    final showHint = useDelayed(
-      delay: Duration(seconds: 1),
-      before: false,
-      after: true,
-    );
-    useEffect(() {
-      if (showHint) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                "Drag Glass or tap anywhere!",
-                style: GoogleFonts.lexendDecaTextTheme().bodyLarge!.copyWith(
-                      color: Theme.of(context).colorScheme.onInverseSurface,
-                    ),
-              ),
-            ),
-          );
-        });
-      }
-      return null;
-    }, [showHint]);
-
     return SizedBox.expand(
       child: Container(
         color: Theme.of(context).colorScheme.surface,
@@ -170,13 +171,13 @@ class Background extends HookWidget {
               ),
             ),
           ),
-          child: Padding(
-            padding: const EdgeInsets.all(64.0),
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                Align(
-                  alignment: Alignment.bottomLeft,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              Align(
+                alignment: Alignment.bottomLeft,
+                child: Padding(
+                  padding: const EdgeInsets.all(24.0),
                   child: Text(
                     'Liquid\nGlass\nRenderer',
                     style: GoogleFonts.lexendDecaTextTheme()
@@ -189,9 +190,9 @@ class Background extends HookWidget {
                         ),
                   ),
                 ),
-                child,
-              ],
-            ),
+              ),
+              child,
+            ],
           ),
         ),
       ),
