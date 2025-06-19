@@ -87,23 +87,35 @@ class MainApp extends HookWidget {
       home: Scaffold(
         body: Builder(
           builder: (context) {
-            return GestureDetector(
-              onTap: () {
-                Navigator.push(
-                  context,
-                  ModalSheetRoute(
-                    barrierColor: Colors.black26,
-                    swipeDismissible: true,
-                    viewportPadding: const EdgeInsets.all(100),
-                    builder: (context) {
-                      return SettingsSheet();
-                    },
+            return Background(
+              child: Stack(
+                children: [
+                  Align(
+                    alignment: Alignment.center,
+                    child: LiquidGlass(
+                        blur: 8,
+                        glassContainsChild: false,
+                        settings: LiquidGlassSettings(
+                          thickness: 30,
+                          lightIntensity: .6,
+                          ambientStrength: 2,
+                          chromaticAberration: 4,
+                          glassColor: Theme.of(
+                            context,
+                          ).colorScheme.surface.withValues(alpha: 0.5),
+                        ),
+                        shape: MorphableShape(
+                          morphableShapeBorder: PolygonShapeBorder(
+                            sides: 6,
+                            cornerRadius: Length(30),
+                          ),
+                        ),
+                        child: SizedBox(
+                          width: 240,
+                          height: 240,
+                        )),
                   ),
-                );
-              },
-             
-              child: Background(
-                child: SizedBox(),
+                ],
               ),
             );
           },
@@ -133,8 +145,8 @@ class Background extends HookWidget {
               content: Text(
                 "Drag Glass or tap anywhere!",
                 style: GoogleFonts.lexendDecaTextTheme().bodyLarge!.copyWith(
-                  color: Theme.of(context).colorScheme.onInverseSurface,
-                ),
+                      color: Theme.of(context).colorScheme.onInverseSurface,
+                    ),
               ),
             ),
           );
@@ -147,167 +159,38 @@ class Background extends HookWidget {
       child: Container(
         color: Theme.of(context).colorScheme.surface,
         child: Container(
-          margin: const EdgeInsets.only(bottom: 64, left: 64),
           decoration: ShapeDecoration(
-            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            image: DecorationImage(
+              image: AssetImage('assets/wallpaper.webp'),
+              fit: BoxFit.cover,
+            ),
             shape: RoundedSuperellipseBorder(
-              borderRadius: BorderRadius.only(bottomLeft: Radius.circular(80)),
-            ),
-          ),
-          child: Container(
-            margin: const EdgeInsets.only(bottom: 16, left: 16),
-            decoration: ShapeDecoration(
-              image: DecorationImage(
-                image: AssetImage('assets/wallpaper.webp'),
-                fit: BoxFit.cover,
-              ),
-              shape: RoundedSuperellipseBorder(
-                borderRadius: BorderRadius.only(
-                  bottomLeft: Radius.circular(64),
-                ),
-              ),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(64.0),
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  Align(
-                    alignment: Alignment.bottomLeft,
-                    child: Text(
-                      'Liquid\nGlass\nRenderer',
-                      style: GoogleFonts.lexendDecaTextTheme().headlineLarge
-                          ?.copyWith(
-                            fontSize: 120,
-                            height: 1,
-                            fontWeight: FontWeight.w900,
-                            color: Color(0xFF287390),
-                          ),
-                    ),
-                  ),
-                  child,
-                ],
+              borderRadius: BorderRadius.only(
+                bottomLeft: Radius.circular(64),
               ),
             ),
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class SettingsSheet extends StatelessWidget {
-  const SettingsSheet({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Sheet(
-      dragConfiguration: SheetDragConfiguration(),
-      scrollConfiguration: const SheetScrollConfiguration(),
-      initialOffset: SheetOffset(1),
-      shrinkChildToAvoidDynamicOverlap: true,
-      shrinkChildToAvoidStaticOverlap: true,
-      snapGrid: SheetSnapGrid(snaps: [SheetOffset(0.5), SheetOffset(1)]),
-      child: SafeArea(
-        child: LiquidGlass(
-          blur: 10,
-          glassContainsChild: false,
-          settings: LiquidGlassSettings(
-            thickness: 40,
-            lightIntensity: .4,
-            ambientStrength: 2,
-            chromaticAberration: 4,
-            glassColor: Theme.of(
-              context,
-            ).colorScheme.surface.withValues(alpha: 0.4),
-          ),
-          shape: MorphableShape(
-            morphableShapeBorder: PolygonShapeBorder(
-              sides: 10,
-              cornerRadius: Length(30),
-            ),
-          ),
-          child: DefaultTextStyle(
-            style: Theme.of(context).textTheme.bodyLarge!,
-            child: Align(
-              alignment: Alignment.topCenter,
-              child: SingleChildScrollView(
-                child: Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Text(
-                        'Settings',
-                        style: Theme.of(context).textTheme.headlineLarge,
-                      ),
-                      const SizedBox(height: 16),
-                      Text('Thickness:'),
-                      CupertinoSlider(
-                        value: thicknessNotifier.value,
-                        onChanged: (value) {
-                          thicknessNotifier.value = value;
-                        },
-                        min: 0,
-                        max: 100,
-                      ),
-                      Text('Corner Radius:'),
-                      CupertinoSlider(
-                        value: cornerRadiusNotifier.value,
-                        onChanged: (value) {
-                          cornerRadiusNotifier.value = value;
-                        },
-                        min: 0,
-                        max: 100,
-                      ),
-                      Text('Light Intensity:'),
-                      CupertinoSlider(
-                        value: lightIntensityNotifier.value,
-                        onChanged: (value) {
-                          lightIntensityNotifier.value = value;
-                        },
-                        min: 0,
-                        max: 5,
-                      ),
-
-                      Text('Blur:'),
-                      CupertinoSlider(
-                        value: blurFactorNotifier.value,
-                        onChanged: (value) {
-                          blurFactorNotifier.value = value;
-                        },
-                      ),
-                      Text('Liquid Factor™:'),
-                      CupertinoSlider(
-                        value: blendNotifier.value,
-                        onChanged: (value) {
-                          blendNotifier.value = value;
-                        },
-                        min: 0,
-                        max: 100,
-                      ),
-                      Text('Chromatic Aberration:'),
-                      CupertinoSlider(
-                        value: chromaticAberrationNotifier.value,
-                        onChanged: (value) {
-                          chromaticAberrationNotifier.value = value;
-                        },
-                        min: 0,
-                        max: 10,
-                      ),
-                      Text('Ambient Strength:'),
-                      CupertinoSlider(
-                        value: ambientStrengthNotifier.value,
-                        onChanged: (value) {
-                          ambientStrengthNotifier.value = value;
-                        },
-                        min: 0,
-                        max: 5,
-                      ),
-                    ],
+          child: Padding(
+            padding: const EdgeInsets.all(64.0),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                Align(
+                  alignment: Alignment.bottomLeft,
+                  child: Text(
+                    'Liquid\nGlass\nRenderer',
+                    style: GoogleFonts.lexendDecaTextTheme()
+                        .headlineLarge
+                        ?.copyWith(
+                          fontSize: 120,
+                          height: 1,
+                          fontWeight: FontWeight.w900,
+                          color: Color(0xFF287390),
+                        ),
                   ),
                 ),
-              ),
+                child,
+              ],
             ),
           ),
         ),
