@@ -6,7 +6,7 @@ homepage: https://whynotmake.it
 repository: https://github.com/whynotmake-it/flutter_liquid_glass/tree/main/packages/liquid_glass_renderer
 screenshots:
   - description: "A title image with three liquid glass elements"
-    path: doc/screenshot.png  
+    path: doc/screenshot.png
 
 topics:
   - liquid-glass
@@ -17,7 +17,7 @@ topics:
 
 environment:
   sdk: ">=3.0.0 <4.0.0"
-  flutter: ">=3.32.4"
+  flutter: ">=3.32.2"
 
 # We only support Platforms that support Impeller.
 platforms:
@@ -31,6 +31,7 @@ dependencies:
     sdk: flutter
   flutter_shaders: ^0.1.3
   meta: ^1.16.0
+  morphable_shape: ^2.0.0
 
 dev_dependencies:
   flutter_test:

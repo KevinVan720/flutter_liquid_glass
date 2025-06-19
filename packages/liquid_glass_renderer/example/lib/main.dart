@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:liquid_glass_renderer/liquid_glass_renderer.dart';
+import 'package:morphable_shape/morphable_shape.dart';
 import 'package:rivership/rivership.dart';
 import 'package:smooth_sheets/smooth_sheets.dart';
 
@@ -100,81 +101,84 @@ class MainApp extends HookWidget {
                   ),
                 );
               },
-              child: Background(
-                child: LiquidGlassLayer(
-                  settings: LiquidGlassSettings(
-                    thickness: thickness,
-                    lightAngle: lightAngle,
-                    glassColor: color.withValues(
-                      alpha: color.a * thickness / 20,
-                    ),
-                    lightIntensity: lightIntensityNotifier.value,
-                    ambientStrength: ambientStrengthNotifier.value,
-                    blend: blend,
-                    chromaticAberration: chromaticAberration,
-                  ),
-                  child: Stack(
-                    alignment: Alignment.bottomLeft,
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 90, left: 140),
-                        child: DragDismissable(
-                          threshold: double.maxFinite,
-                          velocityThreshold: double.maxFinite,
-                          spring: Spring.bouncy,
-                          child: LiquidGlass.inLayer(
-                            blur: blur,
-                            shape: LiquidRoundedSuperellipse(
-                              borderRadius: Radius.circular(cornerRadius),
-                            ),
-                            child: Container(
-                              color: Colors.transparent,
-                              child: SizedBox.square(dimension: 160),
-                            ),
-                          ),
-                        ),
-                      ),
-                      Align(
-                        alignment: Alignment.topRight,
-                        child: DragDismissable(
-                          threshold: double.maxFinite,
-                          velocityThreshold: double.maxFinite,
-                          spring: Spring.bouncy,
-                          child: LiquidGlass.inLayer(
-                            glassContainsChild: false,
-                            blur: blur,
-                            shape: LiquidRoundedSuperellipse(
-                              borderRadius: Radius.circular(cornerRadius),
-                            ),
-                            child: Padding(
-                              padding: const EdgeInsets.all(64.0),
-                              child: FlutterLogo(size: 200),
-                            ),
-                          ),
-                        ),
-                      ),
-                      Align(
-                        alignment: Alignment.topLeft,
-                        child: DragDismissable(
-                          threshold: double.maxFinite,
-                          velocityThreshold: double.maxFinite,
-                          spring: Spring.bouncy,
-                          child: LiquidGlass.inLayer(
-                            glassContainsChild: false,
-                            blur: blur,
-                            shape: LiquidOval(),
-                            child: Container(
-                              width: 100,
-                              height: 80,
-                              color: Colors.transparent,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
+              child: Container(
+                color: Colors.red,
               ),
+              // child: Background(
+              //   child: LiquidGlassLayer(
+              //     settings: LiquidGlassSettings(
+              //       thickness: thickness,
+              //       lightAngle: lightAngle,
+              //       glassColor: color.withValues(
+              //         alpha: color.a * thickness / 20,
+              //       ),
+              //       lightIntensity: lightIntensityNotifier.value,
+              //       ambientStrength: ambientStrengthNotifier.value,
+              //       blend: blend,
+              //       chromaticAberration: chromaticAberration,
+              //     ),
+              //     child: Stack(
+              //       alignment: Alignment.bottomLeft,
+              //       children: [
+              //         Padding(
+              //           padding: const EdgeInsets.only(bottom: 90, left: 140),
+              //           child: DragDismissable(
+              //             threshold: double.maxFinite,
+              //             velocityThreshold: double.maxFinite,
+              //             spring: Spring.bouncy,
+              //             child: LiquidGlass.inLayer(
+              //               blur: blur,
+              //               shape: LiquidRoundedSuperellipse(
+              //                 borderRadius: Radius.circular(cornerRadius),
+              //               ),
+              //               child: Container(
+              //                 color: Colors.transparent,
+              //                 child: SizedBox.square(dimension: 160),
+              //               ),
+              //             ),
+              //           ),
+              //         ),
+              //         Align(
+              //           alignment: Alignment.topRight,
+              //           child: DragDismissable(
+              //             threshold: double.maxFinite,
+              //             velocityThreshold: double.maxFinite,
+              //             spring: Spring.bouncy,
+              //             child: LiquidGlass.inLayer(
+              //               glassContainsChild: false,
+              //               blur: blur,
+              //               shape: LiquidRoundedSuperellipse(
+              //                 borderRadius: Radius.circular(cornerRadius),
+              //               ),
+              //               child: Padding(
+              //                 padding: const EdgeInsets.all(64.0),
+              //                 child: FlutterLogo(size: 200),
+              //               ),
+              //             ),
+              //           ),
+              //         ),
+              //         Align(
+              //           alignment: Alignment.topLeft,
+              //           child: DragDismissable(
+              //             threshold: double.maxFinite,
+              //             velocityThreshold: double.maxFinite,
+              //             spring: Spring.bouncy,
+              //             child: LiquidGlass.inLayer(
+              //               glassContainsChild: false,
+              //               blur: blur,
+              //               shape: LiquidOval(),
+              //               child: Container(
+              //                 width: 100,
+              //                 height: 80,
+              //                 color: Colors.transparent,
+              //               ),
+              //             ),
+              //           ),
+              //         ),
+              //       ],
+              //     ),
+              //   ),
+              // ),
             );
           },
         ),
@@ -291,7 +295,13 @@ class SettingsSheet extends StatelessWidget {
               context,
             ).colorScheme.surface.withValues(alpha: 0.4),
           ),
-          shape: LiquidRoundedSuperellipse(borderRadius: Radius.circular(24)),
+          shape: MorphableShape(
+            morphableShapeBorder: RectangleShapeBorder(
+              borderRadius: DynamicBorderRadius.all(
+                DynamicRadius.circular(Length(70)),
+              ),
+            ),
+          ),
           child: DefaultTextStyle(
             style: Theme.of(context).textTheme.bodyLarge!,
             child: Align(
