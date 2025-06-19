@@ -298,7 +298,7 @@ class SettingsSheet extends StatelessWidget {
           shape: MorphableShape(
             morphableShapeBorder: RectangleShapeBorder(
               borderRadius: DynamicBorderRadius.all(
-                DynamicRadius.circular(Length(70)),
+                DynamicRadius.circular(Length(200)),
               ),
             ),
           ),

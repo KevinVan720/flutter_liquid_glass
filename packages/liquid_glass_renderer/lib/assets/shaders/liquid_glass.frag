@@ -34,109 +34,208 @@ layout(location = 9) uniform float uAmbientStrength = 0.1;
 layout(location = 10) uniform float uThickness;
 layout(location = 11) uniform float uRefractiveIndex = 1.2;
 
-// Shape uniforms
-layout(location = 12) uniform float uShape1Type;
-layout(location = 13) uniform float uShape1CenterX;
-layout(location = 14) uniform float uShape1CenterY;
-layout(location = 15) uniform float uShape1SizeW;
-layout(location = 16) uniform float uShape1SizeH;
-layout(location = 17) uniform float uShape1CornerRadius;
+// Control points uniforms
+layout(location = 12) uniform float uNumPoints; // Number of control points
 
-vec2 uShape1Center = vec2(uShape1CenterX, uShape1CenterY);
-vec2 uShape1Size = vec2(uShape1SizeW, uShape1SizeH);
-
-layout(location = 18) uniform float uShape2Type;
-layout(location = 19) uniform float uShape2CenterX;
-layout(location = 20) uniform float uShape2CenterY;
-layout(location = 21) uniform float uShape2SizeW;
-layout(location = 22) uniform float uShape2SizeH;
-layout(location = 23) uniform float uShape2CornerRadius;
-
-vec2 uShape2Center = vec2(uShape2CenterX, uShape2CenterY);
-vec2 uShape2Size = vec2(uShape2SizeW, uShape2SizeH);
-
-layout(location = 24) uniform float uShape3Type;
-layout(location = 25) uniform float uShape3CenterX;
-layout(location = 26) uniform float uShape3CenterY;
-layout(location = 27) uniform float uShape3SizeW;
-layout(location = 28) uniform float uShape3SizeH;
-layout(location = 29) uniform float uShape3CornerRadius;
-
-vec2 uShape3Center = vec2(uShape3CenterX, uShape3CenterY);
-vec2 uShape3Size = vec2(uShape3SizeW, uShape3SizeH);
-
-layout(location = 30) uniform float uBlend;
-
-uniform sampler2D uBackgroundTexture;
+layout(binding = 0) uniform sampler2D uBackgroundTexture; // Auto-provided by BackdropFilterLayer
+layout(binding = 1) uniform sampler2D uControlPointsTexture; // Texture containing control points
 layout(location = 0) out vec4 fragColor;
 
+// Constants for SDF calculation
+const float INF = 1.0 / 0.0;
+const float SQRT3 = 1.732050807568877;
 
-
-// Shape generation functions from shapes.frag
-mat2 rotate2d(float angle) {
-    return mat2(cos(angle), -sin(angle), sin(angle), cos(angle));
-}
-
-float sdfRRect( in vec2 p, in vec2 b, in float r ) {
-    float shortest = min(b.x, b.y);
-    r = min(r, shortest);
-    vec2 q = abs(p)-b+r;
-    return min(max(q.x,q.y),0.0) + length(max(q,0.0)) - r;
-}
-
-float sdfRect(vec2 p, vec2 b) {
-    vec2 d = abs(p) - b;
-    return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
-}
-
-float sdfSquircle(vec2 p, vec2 b, float r, float n) {
-    float shortest = min(b.x, b.y);
-    r = min(r, shortest);
-
-    vec2 q = abs(p) - b + r;
-    // The component-wise power function `pow(max(q, 0.0), n)` calculates the
-    // superelliptical curve for the corner. The result is then raised to `1.0/n`
-    // to get the final distance, which is equivalent to the Lp-norm. This
-    // provides a distance field for a rectangle with superelliptical corners. A
-    // value of n=2.0 results in standard circular corners. The
-    // `min(max(q.x, q.y), 0.0)` part handles the distance inside the shape
-    // correctly.
-    return min(max(q.x, q.y), 0.0) + pow(
-        pow(max(q.x, 0.0), n) + pow(max(q.y, 0.0), n),
-        1.0 / n
-    ) - r;
-}
-
-float sdfEllipse(vec2 p, vec2 r) {
-    r = max(r, 1e-4);
-    float k1 = length(p / r);
-    float k2 = length(p / (r * r));
-    return (k1 * (k1 - 1.0)) / max(k2, 1e-4);
-}
-
-float smoothUnion(float d1, float d2, float k) {
-    float e = max(k - abs(d1 - d2), 0.0);
-    return min(d1, d2) - e * e * 0.25 / k;
-}
-
-float getShapeSDF(float type, vec2 p, vec2 center, vec2 size, float r) {
-    if (type == 1.0) { // squircle
-        return sdfSquircle(p - center, size / 2.0, r, 2.0);
+// Function to read a control point from the texture
+vec2 getControlPoint(int index) {
+    if (index >= int(uNumPoints) || uNumPoints <= 0.0) {
+        return vec2(0.0);
     }
-    if (type == 2.0) { // ellipse
-        return sdfEllipse(p - center, size / 2.0);
+    
+    // Sample from texture: each point is stored as a pixel
+    // x-coordinate in red channel, y-coordinate in green channel
+    float u = (float(index) + 0.5) / uNumPoints; // Center of pixel
+    vec4 texel = texture(uControlPointsTexture, vec2(u, 0.5));
+    
+    // Decode the encoded pixel coordinates
+    float x = float(int(texel.r * 255.0) | ((int(texel.b * 255.0) & 0x0F) << 8));
+    float y = float(int(texel.g * 255.0) | (((int(texel.b * 255.0) >> 4) & 0x0F) << 8));
+    
+    return vec2(x, y);
+}
+
+// Cross-product of two 2D vectors
+float cross2(in vec2 a, in vec2 b) {
+    return a.x*b.y - a.y*b.x;
+}
+
+// Clamp a value to [0, 1]
+float saturate(in float a) {
+    return clamp(a, 0.0, 1.0);
+}
+vec3 saturate(in vec3 a) {
+    return clamp(a, 0.0, 1.0);
+}
+
+// Minimum of the absolute of two values
+float abs_min(float a, float b) {
+    return abs(a) < abs(b) ? a : b;
+}
+
+// SDF for a line segment
+float sdf_line(in vec2 p, in vec2 a, in vec2 b) {
+    float h = saturate(dot(p - a, b - a) / dot(b - a, b - a));
+    return length(p - a - h * (b - a));
+}
+
+// Like the SDF for a line but partitioning space into positive and negative
+float sdf_line_partition(in vec2 p, in vec2 a, in vec2 b) {
+    vec2 ba = b - a;
+    vec2 pa = p - a;
+    float h = saturate(dot(pa, ba) / dot(ba, ba));
+    vec2 k = pa - h * ba;
+    vec2 n = vec2(ba.y, -ba.x);
+    return (dot(k,n) >= 0.0) ? length(k) : -length(k);
+}
+
+// Signed distance to a quadratic Bézier curve
+float sdf_bezier(in vec2 pos, in vec2 A, in vec2 B, in vec2 C) {
+    const float EPSILON = 1e-3;
+    const float ONE_THIRD = 1.0 / 3.0;
+
+    // Handle cases where points coincide
+    bool abEqual = all(equal(A, B));
+    bool bcEqual = all(equal(B, C));
+    bool acEqual = all(equal(A, C));
+    
+    if (abEqual && bcEqual) {
+        return distance(pos, A);
+    } else if (abEqual || acEqual) {
+        return sdf_line_partition(pos, B, C);
+    } else if (bcEqual) {
+        return sdf_line_partition(pos, A, C);
     }
-    if (type == 3.0) { // rounded rectangle
-        return sdfRRect(p - center, size / 2.0, r);
+    
+    // Handle colinear points
+    if (abs(dot(normalize(B - A), normalize(C - B)) - 1.0) < EPSILON) {
+        return sdf_line_partition(pos, A, C);
     }
-    return 1e9; // none
+    
+    vec2 a = B - A;
+    vec2 b = A - 2.0*B + C;
+    vec2 c = a * 2.0;
+    vec2 d = A - pos;
+
+    float kk = 1.0 / dot(b,b);
+    float kx = kk * dot(a,b);
+    float ky = kk * (2.0*dot(a,a)+dot(d,b)) * ONE_THIRD;
+    float kz = kk * dot(d,a);
+
+    float res = 0.0;
+    float sgn = 0.0;
+
+    float p = ky - kx*kx;
+    float p3 = p*p*p;
+    float q = kx*(2.0*kx*kx - 3.0*ky) + kz;
+    float h = q*q + 4.0*p3;
+
+    if (h >= 0.0) {
+        // One root
+        h = sqrt(h);
+        vec2 x = 0.5 * (vec2(h, -h) - q);
+        vec2 uv = sign(x) * pow(abs(x), vec2(ONE_THIRD));
+        float t = saturate(uv.x + uv.y - kx) + EPSILON;
+        vec2 q = d + (c + b*t) * t;
+        res = dot(q, q);
+        sgn = cross2(c + 2.0*b*t, q);
+    } else {
+        // Three roots
+        float z = sqrt(-p);
+        float v = acos(q/(p*z*2.0)) * ONE_THIRD;
+        float m = cos(v);
+        float n = sin(v) * SQRT3;
+        vec3 t = saturate(vec3(m+m,-n-m,n-m)*z-kx) + EPSILON;
+        vec2 qx = d + (c+b*t.x)*t.x;
+        float dx = dot(qx, qx);
+        float sx = cross2(c+2.0*b*t.x, qx);
+        vec2 qy = d + (c+b*t.y)*t.y;
+        float dy = dot(qy, qy);
+        float sy = cross2(c+2.0*b*t.y, qy);
+        res = (dx < dy) ? dx : dy;
+        sgn = (dx < dy) ? sx : sy;
+    }
+    
+    return sign(sgn) * sqrt(res);
+}
+
+// Signed distance to a segment of a control polygon
+float sdf_control_segment(in vec2 p, in vec2 A, in vec2 B, in vec2 C) {
+    return abs_min(sdf_line(p, A, B), sdf_line(p, B, C));
+}
+
+// Signed distance to a control polygon
+// Identifies and returns distance to the closest segment.
+float sdf_control_polygon(in vec2 p, in int controlPolySize, out vec2 closest[3]) {
+    // Cycle through segments and track the closest
+    float d = INF;
+    float ds = 0.0;
+
+    // First n-2 segments
+    vec2 c = 0.5 * (getControlPoint(0) + getControlPoint(1));
+    vec2 prev = c;
+    for (int i = 1; i < controlPolySize - 1; ++i) {
+        prev = c;
+        c = 0.5 * (getControlPoint(i) + getControlPoint(i+1));
+        ds = sdf_control_segment(p, prev, getControlPoint(i), c);
+        if (abs(ds) < abs(d)) {
+            closest[0] = prev;
+            closest[1] = getControlPoint(i);
+            closest[2] = c;
+            d = ds;
+        }
+    }
+
+    // Last-but-one segment
+    prev = c;
+    c = 0.5 * (getControlPoint(controlPolySize-1) + getControlPoint(0));
+    ds = sdf_control_segment(p, prev, getControlPoint(controlPolySize-1), c);
+    if (abs(ds) < abs(d)) {
+        closest[0] = prev;
+        closest[1] = getControlPoint(controlPolySize-1);
+        closest[2] = c;
+        d = ds;
+    }
+
+    // Last segment
+    prev = c;
+    c = 0.5 * (getControlPoint(0) + getControlPoint(1));
+    ds = sdf_control_segment(p, prev, getControlPoint(0), c);
+    if (abs(ds) < abs(d)) {
+        closest[0] = prev;
+        closest[1] = getControlPoint(0);
+        closest[2] = c;
+        d = ds;
+    }
+    
+    // Return distance
+    return d;
+}
+
+// Signed distance to a quadratic Bezier shape made from a given control polygon
+float sdf_bezier_shape(in vec2 p, in int controlPolySize) {
+    // Determine closest segment in control polygon
+    vec2 closest[3];
+    sdf_control_polygon(p, controlPolySize, closest);
+
+    // Refine by determining actual distance to curve of closest segment
+    return sdf_bezier(p, closest[0], closest[1], closest[2]);
 }
 
 float sceneSDF(vec2 p) {
-    float d1 = getShapeSDF(uShape1Type, p, uShape1Center, uShape1Size, uShape1CornerRadius);
-    float d2 = getShapeSDF(uShape2Type, p, uShape2Center, uShape2Size, uShape2CornerRadius);
-    float d3 = getShapeSDF(uShape3Type, p, uShape3Center, uShape3Size, uShape3CornerRadius);
-    return smoothUnion(smoothUnion(d1, d2, uBlend), d3, uBlend);
+    int numPoints = int(uNumPoints);
+    if (numPoints < 3) {
+        return 1e9; // Return a large distance if not enough points
+    }
+    return sdf_bezier_shape(p, numPoints);
 }
 
 // Calculate 3D normal using derivatives

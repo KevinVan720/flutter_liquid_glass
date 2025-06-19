@@ -1,6 +1,9 @@
 // ignore_for_file: avoid_setters_without_getters
 
-import 'dart:ui';
+import 'dart:async';
+import 'dart:math' as math;
+import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -8,8 +11,10 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter_shaders/flutter_shaders.dart';
 import 'package:liquid_glass_renderer/src/liquid_glass.dart';
 import 'package:liquid_glass_renderer/src/liquid_glass_settings.dart';
+import 'package:liquid_glass_renderer/src/liquid_shape.dart';
 import 'package:liquid_glass_renderer/src/raw_shapes.dart';
 import 'package:meta/meta.dart';
+import 'package:morphable_shape/morphable_shape.dart';
 
 /// Represents a layer of multiple [LiquidGlass] shapes that can flow together
 /// and have shared [LiquidGlassSettings].
@@ -78,9 +83,9 @@ class _LiquidGlassLayerState extends State<LiquidGlassLayer>
     with SingleTickerProviderStateMixin {
   @override
   Widget build(BuildContext context) {
-    if (!ImageFilter.isShaderFilterSupported) {
+    if (!ui.ImageFilter.isShaderFilterSupported) {
       assert(
-        ImageFilter.isShaderFilterSupported,
+        ui.ImageFilter.isShaderFilterSupported,
         'liquid_glass_renderer is only supported when using Impeller at the '
         'moment. Please enable Impeller, or check '
         'ImageFilter.isShaderFilterSupported before you use liquid glass '
@@ -165,6 +170,13 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
   static final Expando<RenderLiquidGlassLayer> layerRegistry = Expando();
 
   final Set<RenderLiquidGlass> registeredShapes = {};
+
+  // Control points texture management
+  ui.Image? _controlPointsTexture;
+  List<Offset> _lastControlPoints = [];
+
+  // Constants for control points generation
+  static const int cubicSubdivisionSegments = 3;
 
   double _devicePixelRatio;
   set devicePixelRatio(double value) {
@@ -258,6 +270,188 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
     return result;
   }
 
+  /// Generate control points for morphable shapes
+  List<Offset> _generateControlPointsFromShape(LiquidShape shape, Rect rect) {
+    if (shape is MorphableShape) {
+      return _extractControlPointsFromMorphableShape(
+          shape.morphableShapeBorder, rect);
+    } else {
+      // For other shapes, create a fallback control points representation
+      return _createFallbackControlPoints(rect);
+    }
+  }
+
+  List<Offset> _extractControlPointsFromMorphableShape(
+      OutlinedShapeBorder shapeBorder, Rect rect) {
+    try {
+      final dynamicPath = shapeBorder.generateInnerDynamicPath(rect);
+      return _extractControlPointsFromDynamicPath(dynamicPath);
+    } catch (e) {
+      debugPrint('Error extracting control points: $e');
+      return _createFallbackControlPoints(rect);
+    }
+  }
+
+  List<Offset> _extractControlPointsFromDynamicPath(DynamicPath dynamicPath) {
+    final controlPoints = <Offset>[];
+
+    try {
+      for (int i = 0; i < dynamicPath.nodes.length; i++) {
+        final pathSegment = dynamicPath.getNextPathControlPointsAt(i);
+        final processedPoints = _processPathSegment(pathSegment, i == 0);
+        controlPoints.addAll(processedPoints);
+      }
+    } catch (e) {
+      debugPrint('Error processing DynamicPath: $e');
+      return [];
+    }
+
+    return controlPoints;
+  }
+
+  List<Offset> _processPathSegment(
+      List<Offset> pathSegment, bool isFirstSegment) {
+    final points = <Offset>[];
+
+    if (pathSegment.length == 4) {
+      // Cubic Bézier curve
+      final subdivided = _subdivideCubicBezier(
+        pathSegment[0],
+        pathSegment[1],
+        pathSegment[2],
+        pathSegment[3],
+      );
+      final startIndex = isFirstSegment ? 0 : 1;
+      points.addAll(subdivided.skip(startIndex));
+    } else if (pathSegment.length == 2) {
+      // Linear segment - convert to quadratic
+      final quadraticPoints =
+          _convertLinearToQuadratic(pathSegment[0], pathSegment[1]);
+      final startIndex = isFirstSegment ? 0 : 1;
+      points.addAll(quadraticPoints.skip(startIndex));
+    }
+
+    return points;
+  }
+
+  List<Offset> _subdivideCubicBezier(
+      Offset p0, Offset p1, Offset p2, Offset p3) {
+    final points = <Offset>[];
+    for (int i = 0; i <= cubicSubdivisionSegments; i++) {
+      final t = i / cubicSubdivisionSegments;
+      points.add(_cubicBezierPoint(p0, p1, p2, p3, t));
+    }
+    return points;
+  }
+
+  Offset _cubicBezierPoint(
+      Offset p0, Offset p1, Offset p2, Offset p3, double t) {
+    final u = 1 - t;
+    final tt = t * t;
+    final uu = u * u;
+    final uuu = uu * u;
+    final ttt = tt * t;
+
+    return Offset(
+      uuu * p0.dx + 3 * uu * t * p1.dx + 3 * u * tt * p2.dx + ttt * p3.dx,
+      uuu * p0.dy + 3 * uu * t * p1.dy + 3 * u * tt * p2.dy + ttt * p3.dy,
+    );
+  }
+
+  List<Offset> _convertLinearToQuadratic(Offset startPoint, Offset endPoint) {
+    final controlPoint = Offset(
+      (startPoint.dx + endPoint.dx) * 0.5,
+      (startPoint.dy + endPoint.dy) * 0.5,
+    );
+    return [startPoint, controlPoint, endPoint];
+  }
+
+  List<Offset> _createFallbackControlPoints(Rect rect) {
+    // Create a simple rounded rectangle as fallback
+    final points = <Offset>[];
+    const numPoints = 12;
+
+    final center = rect.center;
+    final radiusX = rect.width * 0.5 * 0.8;
+    final radiusY = rect.height * 0.5 * 0.8;
+
+    for (int i = 0; i < numPoints; i++) {
+      final t = i / numPoints;
+      final angle = t * 2 * math.pi;
+      final x = center.dx + radiusX * math.cos(angle);
+      final y = center.dy + radiusY * math.sin(angle);
+      points.add(Offset(x, y));
+    }
+
+    return points;
+  }
+
+  /// Generate control points for all registered shapes
+  List<Offset> _collectAllControlPoints() {
+    final allControlPoints = <Offset>[];
+
+    for (final shapeRender in registeredShapes) {
+      if (shapeRender.attached && shapeRender.hasSize) {
+        try {
+          // Get transform relative to global coordinates
+          final transform = shapeRender.getTransformTo(null);
+          final rect = MatrixUtils.transformRect(
+              transform, Offset.zero & shapeRender.size);
+
+          final controlPoints =
+              _generateControlPointsFromShape(shapeRender.shape, rect);
+          allControlPoints.addAll(controlPoints);
+        } catch (e) {
+          debugPrint('Failed to collect control points for shape: $e');
+        }
+      }
+    }
+
+    return allControlPoints;
+  }
+
+  Future<ui.Image> _createControlPointsTexture(List<Offset> points) async {
+    if (points.isEmpty) {
+      // Create a dummy texture with one point
+      points = [const Offset(0, 0)];
+    }
+
+    final width = points.length;
+    const height = 1;
+    final pixels = Uint8List(width * height * 4);
+
+    for (int i = 0; i < points.length; i++) {
+      final point = points[i];
+      final pixelIndex = i * 4;
+
+      // Encode pixel coordinates in texture channels
+      // The shader will decode these back to actual coordinates
+      final x = point.dx.clamp(0.0, 4095.0);
+      final y = point.dy.clamp(0.0, 4095.0);
+
+      // Store as 12-bit values in RGBA channels
+      final xInt = x.round();
+      final yInt = y.round();
+
+      pixels[pixelIndex] = (xInt & 0xFF); // Red = X lower 8 bits
+      pixels[pixelIndex + 1] = (yInt & 0xFF); // Green = Y lower 8 bits
+      pixels[pixelIndex + 2] = ((xInt >> 8) & 0x0F) |
+          (((yInt >> 8) & 0x0F) << 4); // Blue = upper 4 bits
+      pixels[pixelIndex + 3] = 255; // Alpha = 1.0
+    }
+
+    final completer = Completer<ui.Image>();
+    ui.decodeImageFromPixels(
+      pixels,
+      width,
+      height,
+      ui.PixelFormat.rgba8888,
+      (image) => completer.complete(image),
+    );
+
+    return completer.future;
+  }
+
   @override
   void paint(PaintingContext context, Offset offset) {
     final shapes = collectShapes();
@@ -268,42 +462,65 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
       return;
     }
 
-    final shape1 = shapes.firstOrNull?.$2 ?? RawShape.none;
-    final shape2 = shapes.length > 1 ? shapes.elementAt(1).$2 : RawShape.none;
-    final shape3 = shapes.length > 2 ? shapes.elementAt(2).$2 : RawShape.none;
+    // Generate control points for morphable shapes
+    final controlPoints = _collectAllControlPoints();
 
-    _shader
-      ..setFloat(2, _settings.chromaticAberration)
-      ..setFloat(3, _settings.glassColor.r)
-      ..setFloat(4, _settings.glassColor.g)
-      ..setFloat(5, _settings.glassColor.b)
-      ..setFloat(6, _settings.glassColor.a)
-      ..setFloat(7, _settings.lightAngle)
-      ..setFloat(8, _settings.lightIntensity)
-      ..setFloat(9, _settings.ambientStrength)
-      ..setFloat(10, _settings.thickness)
-      ..setFloat(11, 1.51) // refractive index
+    // Update control points texture if needed
+    if (!_listsEqual(_lastControlPoints, controlPoints)) {
+      _lastControlPoints = List.from(controlPoints);
+      _controlPointsTexture = null;
+    }
 
-      // Shape uniforms
-      ..setFloat(12, shape1.type.index.toDouble())
-      ..setFloat(13, shape1.center.dx * _devicePixelRatio)
-      ..setFloat(14, shape1.center.dy * _devicePixelRatio)
-      ..setFloat(15, shape1.size.width * _devicePixelRatio)
-      ..setFloat(16, shape1.size.height * _devicePixelRatio)
-      ..setFloat(17, shape1.cornerRadius * _devicePixelRatio)
-      ..setFloat(18, shape2.type.index.toDouble())
-      ..setFloat(19, shape2.center.dx * _devicePixelRatio)
-      ..setFloat(20, shape2.center.dy * _devicePixelRatio)
-      ..setFloat(21, shape2.size.width * _devicePixelRatio)
-      ..setFloat(22, shape2.size.height * _devicePixelRatio)
-      ..setFloat(23, shape2.cornerRadius * _devicePixelRatio)
-      ..setFloat(24, shape3.type.index.toDouble())
-      ..setFloat(25, shape3.center.dx * _devicePixelRatio)
-      ..setFloat(26, shape3.center.dy * _devicePixelRatio)
-      ..setFloat(27, shape3.size.width * _devicePixelRatio)
-      ..setFloat(28, shape3.size.height * _devicePixelRatio)
-      ..setFloat(29, shape3.cornerRadius * _devicePixelRatio)
-      ..setFloat(30, _settings.blend * _devicePixelRatio);
+    // Create control points texture if needed (async, non-blocking)
+    if (_controlPointsTexture == null && controlPoints.isNotEmpty) {
+      _createControlPointsTexture(controlPoints).then((texture) {
+        _controlPointsTexture = texture;
+        markNeedsPaint(); // Repaint when texture is ready
+      }).catchError((e) {
+        debugPrint('Failed to create control points texture: $e');
+      });
+      // Continue rendering without early return to avoid crashes
+    }
+
+    try {
+      // Set shader uniforms matching the expected locations in the shader
+      _shader
+        ..setFloat(0, size.width * _devicePixelRatio) // uSizeW
+        ..setFloat(1, size.height * _devicePixelRatio) // uSizeH
+        ..setFloat(2, _settings.chromaticAberration) // uChromaticAberration
+        ..setFloat(3, _settings.glassColor.r) // uGlassColorR
+        ..setFloat(4, _settings.glassColor.g) // uGlassColorG
+        ..setFloat(5, _settings.glassColor.b) // uGlassColorB
+        ..setFloat(6, _settings.glassColor.a) // uGlassColorA
+        ..setFloat(7, _settings.lightAngle) // uLightAngle
+        ..setFloat(8, _settings.lightIntensity) // uLightIntensity
+        ..setFloat(9, _settings.ambientStrength) // uAmbientStrength
+        ..setFloat(10, _settings.thickness) // uThickness
+        ..setFloat(11, 1.51); // uRefractiveIndex
+
+      // Only set these if the shader supports them (to avoid RangeError)
+      try {
+        _shader.setFloat(
+            12,
+            controlPoints.isNotEmpty
+                ? controlPoints.length.toDouble()
+                : 0.0); // uNumPoints
+      } catch (e) {
+        debugPrint('Failed to set uNumPoints: $e');
+      }
+
+      // Set control points texture to sampler 1 (sampler 0 is auto-provided by BackdropFilterLayer)
+      if (_controlPointsTexture != null) {
+        try {
+          _shader.setImageSampler(1, _controlPointsTexture!);
+        } catch (e) {
+          debugPrint('Failed to set control points texture: $e');
+        }
+      }
+    } catch (e) {
+      debugPrint('Error setting shader uniforms: $e');
+      // Continue rendering to avoid crashes
+    }
 
     _paintShapeBlurs(context, offset, shapes);
 
@@ -311,7 +528,7 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
 
     context.pushLayer(
       BackdropFilterLayer(
-        filter: ImageFilter.shader(_shader),
+        filter: ui.ImageFilter.shader(_shader),
       ),
       (context, offset) {
         super.paint(context, offset);
@@ -324,6 +541,14 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
       },
       offset,
     );
+  }
+
+  bool _listsEqual<T>(List<T> a, List<T> b) {
+    if (a.length != b.length) return false;
+    for (int i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   @override

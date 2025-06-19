@@ -51,6 +51,9 @@ class RawShape with EquatableMixin {
           size: size,
           cornerRadius: shape.borderRadius.x,
         );
+      case MorphableShape():
+        // MorphableShape uses control points, so we return none for RawShape
+        return RawShape.none;
     }
   }
 

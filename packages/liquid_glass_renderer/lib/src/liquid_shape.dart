@@ -1,6 +1,7 @@
 import 'package:equatable/equatable.dart';
 import 'package:flutter/material.dart';
 import 'package:liquid_glass_renderer/liquid_glass_renderer.dart';
+import 'package:morphable_shape/morphable_shape.dart';
 
 /// Represents a shape that can be used by a [LiquidGlass] widget.
 sealed class LiquidShape extends OutlinedBorder with EquatableMixin {
@@ -146,4 +147,59 @@ class LiquidRoundedRectangle extends LiquidShape {
 
   @override
   List<Object?> get props => [...super.props, borderRadius];
+}
+
+/// Represents an arbitrary morphable shape that can be used by a [LiquidGlass] widget.
+///
+/// This shape uses control points generated from a [morphable_shape] package's
+/// [OutlinedShapeBorder] to create liquid glass effects for complex shapes.
+class MorphableShape extends LiquidShape {
+  /// Creates a new [MorphableShape] with the given [morphableShapeBorder].
+  const MorphableShape({
+    required this.morphableShapeBorder,
+  });
+
+  /// The morphable shape border that defines the shape.
+  final OutlinedShapeBorder morphableShapeBorder;
+
+  @override
+  OutlinedBorder get _equivalentOutlinedBorder => const OvalBorder();
+
+  @override
+  ShapeBorder scale(double t) {
+    return MorphableShape(
+      morphableShapeBorder: morphableShapeBorder,
+    );
+  }
+
+  @override
+  OutlinedBorder copyWith({BorderSide? side}) {
+    return MorphableShape(
+      morphableShapeBorder: morphableShapeBorder,
+    );
+  }
+
+  @override
+  Path getInnerPath(Rect rect, {TextDirection? textDirection}) {
+    return morphableShapeBorder.getInnerPath(
+      rect,
+      textDirection: textDirection,
+    );
+  }
+
+  @override
+  Path getOuterPath(Rect rect, {TextDirection? textDirection}) {
+    return morphableShapeBorder.getOuterPath(
+      rect,
+      textDirection: textDirection,
+    );
+  }
+
+  @override
+  void paint(Canvas canvas, Rect rect, {TextDirection? textDirection}) {
+    morphableShapeBorder.paint(canvas, rect, textDirection: textDirection);
+  }
+
+  @override
+  List<Object?> get props => [morphableShapeBorder];
 }
