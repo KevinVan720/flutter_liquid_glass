@@ -389,18 +389,30 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
   /// Generate control points for all registered shapes
   List<Offset> _collectAllControlPoints() {
     final allControlPoints = <Offset>[];
+    final layerGlobalOffset = localToGlobal(Offset.zero);
 
     for (final shapeRender in registeredShapes) {
       if (shapeRender.attached && shapeRender.hasSize) {
         try {
-          // Get transform relative to global coordinates
-          final transform = shapeRender.getTransformTo(null);
-          final rect = MatrixUtils.transformRect(
-              transform, Offset.zero & shapeRender.size);
+          // Use layerGlobalOffset to calculate actual relative position
+          final shapeGlobalOffset = shapeRender.localToGlobal(Offset.zero);
+          final shapeRelativeToLayer = shapeGlobalOffset - layerGlobalOffset;
+
+          // Create rect for the shape positioned within the layer
+          final shapeRect = shapeRelativeToLayer & shapeRender.size;
 
           final controlPoints =
-              _generateControlPointsFromShape(shapeRender.shape, rect);
-          allControlPoints.addAll(controlPoints);
+              _generateControlPointsFromShape(shapeRender.shape, shapeRect);
+
+          // Scale control points by device pixel ratio only
+          final transformedPoints = controlPoints.map((point) {
+            return Offset(
+              (point.dx + shapeGlobalOffset.dx) * _devicePixelRatio,
+              (point.dy + shapeGlobalOffset.dy) * _devicePixelRatio,
+            );
+          }).toList();
+
+          allControlPoints.addAll(transformedPoints);
         } catch (e) {
           debugPrint('Failed to collect control points for shape: $e');
         }
@@ -462,64 +474,89 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
       return;
     }
 
-    // Generate control points for morphable shapes
+    // Check if we have any shapes at all
+    if (shapes.isEmpty) {
+      // No shapes registered, just render children
+      _paintShapeContents(context, offset, shapes, glassContainsChild: true);
+      _paintShapeContents(context, offset, shapes, glassContainsChild: false);
+      return;
+    }
+
+    // Try to use morphable shapes first, fallback to basic shapes if needed
     final controlPoints = _collectAllControlPoints();
+    final hasValidControlPoints = controlPoints.length >= 3;
 
-    // Update control points texture if needed
-    if (!_listsEqual(_lastControlPoints, controlPoints)) {
-      _lastControlPoints = List.from(controlPoints);
-      _controlPointsTexture = null;
-    }
+    if (!hasValidControlPoints) {
+      // Fallback to the original simple shape rendering
+      final shape1 = shapes.firstOrNull?.$2 ?? RawShape.none;
+      final shape2 = shapes.length > 1 ? shapes.elementAt(1).$2 : RawShape.none;
+      final shape3 = shapes.length > 2 ? shapes.elementAt(2).$2 : RawShape.none;
 
-    // Create control points texture if needed (async, non-blocking)
-    if (_controlPointsTexture == null && controlPoints.isNotEmpty) {
-      _createControlPointsTexture(controlPoints).then((texture) {
-        _controlPointsTexture = texture;
-        markNeedsPaint(); // Repaint when texture is ready
-      }).catchError((e) {
-        debugPrint('Failed to create control points texture: $e');
-      });
-      // Continue rendering without early return to avoid crashes
-    }
-
-    try {
-      // Set shader uniforms matching the expected locations in the shader
-      _shader
-        ..setFloat(0, size.width * _devicePixelRatio) // uSizeW
-        ..setFloat(1, size.height * _devicePixelRatio) // uSizeH
-        ..setFloat(2, _settings.chromaticAberration) // uChromaticAberration
-        ..setFloat(3, _settings.glassColor.r) // uGlassColorR
-        ..setFloat(4, _settings.glassColor.g) // uGlassColorG
-        ..setFloat(5, _settings.glassColor.b) // uGlassColorB
-        ..setFloat(6, _settings.glassColor.a) // uGlassColorA
-        ..setFloat(7, _settings.lightAngle) // uLightAngle
-        ..setFloat(8, _settings.lightIntensity) // uLightIntensity
-        ..setFloat(9, _settings.ambientStrength) // uAmbientStrength
-        ..setFloat(10, _settings.thickness) // uThickness
-        ..setFloat(11, 1.51); // uRefractiveIndex
-
-      // Only set these if the shader supports them (to avoid RangeError)
       try {
-        _shader.setFloat(
-            12,
-            controlPoints.isNotEmpty
-                ? controlPoints.length.toDouble()
-                : 0.0); // uNumPoints
+        _shader
+          ..setFloat(0, size.width * _devicePixelRatio) // uSizeW
+          ..setFloat(1, size.height * _devicePixelRatio) // uSizeH
+          ..setFloat(2, _settings.chromaticAberration) // uChromaticAberration
+          ..setFloat(3, _settings.glassColor.r) // uGlassColorR
+          ..setFloat(4, _settings.glassColor.g) // uGlassColorG
+          ..setFloat(5, _settings.glassColor.b) // uGlassColorB
+          ..setFloat(6, _settings.glassColor.a) // uGlassColorA
+          ..setFloat(7, _settings.lightAngle) // uLightAngle
+          ..setFloat(8, _settings.lightIntensity) // uLightIntensity
+          ..setFloat(9, _settings.ambientStrength) // uAmbientStrength
+          ..setFloat(10, _settings.thickness) // uThickness
+          ..setFloat(11, 1.51) // refractive index
+          ..setFloat(12, 0.0); // uNumPoints = 0 (use basic shapes)
       } catch (e) {
-        debugPrint('Failed to set uNumPoints: $e');
+        debugPrint('Error setting basic shader uniforms: $e');
+      }
+    } else {
+      // Use morphable shapes with control points
+      // Update control points texture if needed
+      if (!_listsEqual(_lastControlPoints, controlPoints)) {
+        _lastControlPoints = List.from(controlPoints);
+        _controlPointsTexture = null;
       }
 
-      // Set control points texture to sampler 1 (sampler 0 is auto-provided by BackdropFilterLayer)
-      if (_controlPointsTexture != null) {
-        try {
-          _shader.setImageSampler(1, _controlPointsTexture!);
-        } catch (e) {
-          debugPrint('Failed to set control points texture: $e');
-        }
+      // Create control points texture if needed (async, non-blocking)
+      if (_controlPointsTexture == null) {
+        _createControlPointsTexture(controlPoints).then((texture) {
+          _controlPointsTexture = texture;
+          markNeedsPaint(); // Repaint when texture is ready
+        }).catchError((e) {
+          debugPrint('Failed to create control points texture: $e');
+        });
+        // Continue rendering without early return to avoid crashes
       }
-    } catch (e) {
-      debugPrint('Error setting shader uniforms: $e');
-      // Continue rendering to avoid crashes
+
+      try {
+        // Set shader uniforms for morphable shapes
+        _shader
+          ..setFloat(0, size.width * _devicePixelRatio) // uSizeW
+          ..setFloat(1, size.height * _devicePixelRatio) // uSizeH
+          ..setFloat(2, _settings.chromaticAberration) // uChromaticAberration
+          ..setFloat(3, _settings.glassColor.r) // uGlassColorR
+          ..setFloat(4, _settings.glassColor.g) // uGlassColorG
+          ..setFloat(5, _settings.glassColor.b) // uGlassColorB
+          ..setFloat(6, _settings.glassColor.a) // uGlassColorA
+          ..setFloat(7, _settings.lightAngle) // uLightAngle
+          ..setFloat(8, _settings.lightIntensity) // uLightIntensity
+          ..setFloat(9, _settings.ambientStrength) // uAmbientStrength
+          ..setFloat(10, _settings.thickness) // uThickness
+          ..setFloat(11, 1.51) // uRefractiveIndex
+          ..setFloat(12, controlPoints.length.toDouble()); // uNumPoints
+
+        // Set control points texture to sampler 1 (sampler 0 is auto-provided by BackdropFilterLayer)
+        if (_controlPointsTexture != null) {
+          try {
+            _shader.setImageSampler(1, _controlPointsTexture!);
+          } catch (e) {
+            debugPrint('Failed to set control points texture: $e');
+          }
+        }
+      } catch (e) {
+        debugPrint('Error setting morphable shader uniforms: $e');
+      }
     }
 
     _paintShapeBlurs(context, offset, shapes);

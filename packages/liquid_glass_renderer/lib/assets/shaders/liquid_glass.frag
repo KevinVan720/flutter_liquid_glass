@@ -233,7 +233,12 @@ float sdf_bezier_shape(in vec2 p, in int controlPolySize) {
 float sceneSDF(vec2 p) {
     int numPoints = int(uNumPoints);
     if (numPoints < 3) {
-        return 1e9; // Return a large distance if not enough points
+        // Fallback: create a simple rounded rectangle in the center
+        vec2 center = uSize * 0.5;
+        vec2 size = uSize * 0.4; // 40% of screen size
+        vec2 d = abs(p - center) - size * 0.5;
+        float cornerRadius = min(size.x, size.y) * 0.3;
+        return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - cornerRadius;
     }
     return sdf_bezier_shape(p, numPoints);
 }
