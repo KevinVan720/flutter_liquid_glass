@@ -160,7 +160,7 @@ class MorphableShape extends LiquidShape {
   });
 
   /// The morphable shape border that defines the shape.
-  final OutlinedShapeBorder morphableShapeBorder;
+  final MorphableShapeBorder morphableShapeBorder;
 
   @override
   OutlinedBorder get _equivalentOutlinedBorder => const OvalBorder();

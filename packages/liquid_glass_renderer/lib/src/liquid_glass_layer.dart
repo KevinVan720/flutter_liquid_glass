@@ -282,7 +282,7 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
   }
 
   List<Offset> _extractControlPointsFromMorphableShape(
-      OutlinedShapeBorder shapeBorder, Rect rect) {
+      MorphableShapeBorder shapeBorder, Rect rect) {
     try {
       final dynamicPath = shapeBorder.generateInnerDynamicPath(rect);
       return _extractControlPointsFromDynamicPath(dynamicPath);
