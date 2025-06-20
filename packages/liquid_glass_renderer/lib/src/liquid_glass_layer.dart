@@ -250,16 +250,60 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
             Offset.zero & shapeRender.size,
           );
 
-          result.add(
-            (
-              shapeRender,
-              RawShape.fromLiquidGlassShape(
-                shapeRender.shape,
-                center: rect.center,
-                size: rect.size,
-              ),
-            ),
+          var rawShape = RawShape.fromLiquidGlassShape(
+            shapeRender.shape,
+            center: rect.center,
+            size: rect.size,
           );
+
+          // Handle morphable shape caching
+          if (rawShape.type == RawShapeType.morphable &&
+              shapeRender.shape is MorphableShape) {
+            final morphableShape = shapeRender.shape as MorphableShape;
+            final shapeRect = Offset.zero & rect.size;
+
+            // Check if we need to update the cache
+            final existingCache = rawShape.morphableCache;
+            final needsUpdate = existingCache == null ||
+                existingCache.shapeBorder !=
+                    morphableShape.morphableShapeBorder ||
+                existingCache.rect != shapeRect;
+
+            if (needsUpdate) {
+              // Generate new control points
+              final controlPoints = _extractControlPointsFromMorphableShape(
+                morphableShape.morphableShapeBorder,
+                shapeRect,
+              );
+
+              // Create new cache (texture will be generated asynchronously)
+              final newCache = MorphableShapeCache(
+                shapeBorder: morphableShape.morphableShapeBorder,
+                rect: shapeRect,
+                controlPoints: controlPoints,
+              );
+
+              rawShape = rawShape.copyWith(morphableCache: newCache);
+
+              // Generate texture asynchronously if we have valid control points
+              if (controlPoints.isNotEmpty) {
+                _createControlPointsTexture(controlPoints).then((texture) {
+                  // Update the cache with the texture
+                  final updatedCache = newCache.copyWith(texture: texture);
+                  final updatedShape =
+                      rawShape.copyWith(morphableCache: updatedCache);
+
+                  // Store the updated shape back (we'll need a way to update this)
+                  markNeedsPaint();
+                }).catchError((e) {
+                  debugPrint(
+                      'Failed to create texture for morphable shape: $e');
+                });
+              }
+            }
+          }
+
+          result.add((shapeRender, rawShape));
         } catch (e) {
           // Skip shapes that can't be transformed
           debugPrint('Failed to collect shape: $e');
@@ -386,23 +430,31 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
     return points;
   }
 
-  /// Generate control points for all registered shapes
-  List<Offset> _collectAllControlPoints() {
+  /// Generate control points for all registered shapes using cached data
+  List<Offset> _collectAllControlPoints(
+      List<(RenderLiquidGlass, RawShape)> shapes) {
     final allControlPoints = <Offset>[];
     final layerGlobalOffset = localToGlobal(Offset.zero);
 
-    for (final shapeRender in registeredShapes) {
+    for (final (shapeRender, rawShape) in shapes) {
       if (shapeRender.attached && shapeRender.hasSize) {
         try {
           // Use layerGlobalOffset to calculate actual relative position
           final shapeGlobalOffset = shapeRender.localToGlobal(Offset.zero);
           final shapeRelativeToLayer = shapeGlobalOffset - layerGlobalOffset;
 
-          // Create rect for the shape positioned within the layer
-          final shapeRect = shapeRelativeToLayer & shapeRender.size;
+          List<Offset> controlPoints;
 
-          final controlPoints =
-              _generateControlPointsFromShape(shapeRender.shape, shapeRect);
+          if (rawShape.type == RawShapeType.morphable &&
+              rawShape.morphableCache != null) {
+            // Use cached control points
+            controlPoints = rawShape.morphableCache!.controlPoints;
+          } else {
+            // Fallback to generating control points (for non-morphable shapes)
+            final shapeRect = shapeRelativeToLayer & shapeRender.size;
+            controlPoints =
+                _generateControlPointsFromShape(shapeRender.shape, shapeRect);
+          }
 
           // Scale control points by device pixel ratio only
           final transformedPoints = controlPoints.map((point) {
@@ -420,6 +472,20 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
     }
 
     return allControlPoints;
+  }
+
+  /// Get the combined texture from all morphable shapes
+  ui.Image? _getCombinedMorphableTexture(
+      List<(RenderLiquidGlass, RawShape)> shapes) {
+    // For now, return the first available texture
+    // In the future, we could combine multiple textures
+    for (final (_, rawShape) in shapes) {
+      if (rawShape.type == RawShapeType.morphable &&
+          rawShape.morphableCache?.texture != null) {
+        return rawShape.morphableCache!.texture;
+      }
+    }
+    return null;
   }
 
   Future<ui.Image> _createControlPointsTexture(List<Offset> points) async {
@@ -483,7 +549,7 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
     }
 
     // Try to use morphable shapes first, fallback to basic shapes if needed
-    final controlPoints = _collectAllControlPoints();
+    final controlPoints = _collectAllControlPoints(shapes);
     final hasValidControlPoints = controlPoints.length >= 3;
 
     if (!hasValidControlPoints) {
@@ -512,8 +578,12 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
       }
     } else {
       // Use morphable shapes with control points
-      // Update control points texture if needed
-      if (!_listsEqual(_lastControlPoints, controlPoints)) {
+      // Try to get cached texture first
+      final cachedTexture = _getCombinedMorphableTexture(shapes);
+
+      // Fallback: Update control points texture if needed and no cached texture available
+      if (cachedTexture == null &&
+          !_listsEqual(_lastControlPoints, controlPoints)) {
         _lastControlPoints = List.from(controlPoints);
 
         // Create control points texture if needed (async, non-blocking)
@@ -543,9 +613,11 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
           ..setFloat(12, controlPoints.length.toDouble()); // uNumPoints
 
         // Set control points texture to sampler 1 (sampler 0 is auto-provided by BackdropFilterLayer)
-        if (_controlPointsTexture != null) {
+        // Prefer cached texture over fallback texture
+        final textureToUse = cachedTexture ?? _controlPointsTexture;
+        if (textureToUse != null) {
           try {
-            _shader.setImageSampler(1, _controlPointsTexture!);
+            _shader.setImageSampler(1, textureToUse);
           } catch (e) {
             debugPrint('Failed to set control points texture: $e');
           }

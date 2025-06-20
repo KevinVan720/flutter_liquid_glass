@@ -1,9 +1,13 @@
 // ignore_for_file: dead_code, deprecated_member_use_from_same_package
 
+import 'dart:ui' as ui;
+import 'dart:typed_data';
+import 'dart:async';
 import 'package:equatable/equatable.dart';
 import 'package:flutter/material.dart';
 import 'package:liquid_glass_renderer/src/liquid_shape.dart';
 import 'package:meta/meta.dart';
+import 'package:morphable_shape/morphable_shape.dart';
 
 @internal
 enum RawShapeType {
@@ -11,6 +15,38 @@ enum RawShapeType {
   squircle,
   ellipse,
   roundedRectangle,
+  morphable,
+}
+
+/// Cached data for morphable shapes to avoid recomputation
+@internal
+class MorphableShapeCache with EquatableMixin {
+  const MorphableShapeCache({
+    required this.shapeBorder,
+    required this.rect,
+    required this.controlPoints,
+    this.texture,
+  });
+
+  final MorphableShapeBorder shapeBorder;
+  final Rect rect;
+  final List<Offset> controlPoints;
+  final ui.Image? texture;
+
+  /// Create a copy with updated texture
+  MorphableShapeCache copyWith({
+    ui.Image? texture,
+  }) {
+    return MorphableShapeCache(
+      shapeBorder: shapeBorder,
+      rect: rect,
+      controlPoints: controlPoints,
+      texture: texture ?? this.texture,
+    );
+  }
+
+  @override
+  List<Object?> get props => [shapeBorder, rect, controlPoints, texture];
 }
 
 @internal
@@ -20,6 +56,7 @@ class RawShape with EquatableMixin {
     required this.center,
     required this.size,
     required this.cornerRadius,
+    this.morphableCache,
   });
 
   factory RawShape.fromLiquidGlassShape(
@@ -52,8 +89,13 @@ class RawShape with EquatableMixin {
           cornerRadius: shape.borderRadius.x,
         );
       case MorphableShape():
-        // MorphableShape uses control points, so we return none for RawShape
-        return RawShape.none;
+        // For morphable shapes, we'll handle caching separately
+        return RawShape(
+          type: RawShapeType.morphable,
+          center: center,
+          size: size,
+          cornerRadius: 0,
+        );
     }
   }
 
@@ -68,14 +110,28 @@ class RawShape with EquatableMixin {
   final Offset center;
   final Size size;
   final double cornerRadius;
+  final MorphableShapeCache? morphableCache;
 
   Offset get topLeft =>
       Offset(center.dx - size.width / 2, center.dy - size.height / 2);
 
   Rect get rect => topLeft & size;
 
+  /// Create a copy with morphable cache
+  RawShape copyWith({
+    MorphableShapeCache? morphableCache,
+  }) {
+    return RawShape(
+      type: type,
+      center: center,
+      size: size,
+      cornerRadius: cornerRadius,
+      morphableCache: morphableCache,
+    );
+  }
+
   @override
-  List<Object?> get props => [type, center, size, cornerRadius];
+  List<Object?> get props => [type, center, size, cornerRadius, morphableCache];
 }
 
 void _assertSameRadius(Radius borderRadius) {

@@ -88,9 +88,7 @@ class MainApp extends HookWidget {
       insetStyle: CornerStyle.rounded,
     );
 
-    final endShape = CircleShapeBorder(
-     
-    );
+    final endShape = CircleShapeBorder();
 
     final shapeTweenController = useAnimationController(
       duration:
@@ -132,28 +130,40 @@ class MainApp extends HookWidget {
             return Background(
               child: Stack(
                 children: [
-                  Align(
-                    alignment: Alignment.center,
-                    child: LiquidGlass(
-                      blur: 2,
-                      glassContainsChild: true,
-                      settings: LiquidGlassSettings(
-                        thickness: thickness,
-                        lightIntensity: lightIntensityNotifier.value,
-                        ambientStrength: ambientStrengthNotifier.value,
-                        chromaticAberration: chromaticAberration,
-                        glassColor: color.withValues(
-                          alpha: color.a * thickness / 10,
+                  Positioned(
+                    left: glassOffset.value.dx +
+                        MediaQuery.of(context).size.width / 2 -
+                        150, // Center offset (300/2 = 150)
+                    top: glassOffset.value.dy +
+                        MediaQuery.of(context).size.height / 2 -
+                        150,
+                    child: GestureDetector(
+                      onPanUpdate: (details) {
+                        glassOffset.value = glassOffset.value + details.delta;
+                      },
+                      behavior: HitTestBehavior.opaque,
+                      child: LiquidGlass(
+                        blur: 2,
+                        glassContainsChild: true,
+                        settings: LiquidGlassSettings(
+                          thickness: thickness,
+                          lightIntensity: lightIntensityNotifier.value,
+                          ambientStrength: ambientStrengthNotifier.value,
+                          chromaticAberration: chromaticAberration,
+                          glassColor: color.withValues(
+                            alpha: color.a * thickness / 10,
+                          ),
+                          lightAngle: lightAngle,
+                          blend: blend,
                         ),
-                        lightAngle: lightAngle,
-                        blend: blend,
-                      ),
-                      shape: MorphableShape(
-                        morphableShapeBorder: shapeTween.lerp(shapeTweenValue)!,
-                      ),
-                      child: SizedBox(
-                        width: 300,
-                        height: 300,
+                        shape: MorphableShape(
+                          //morphableShapeBorder: shapeTween.lerp(shapeTweenValue)!,
+                          morphableShapeBorder: beginShape,
+                        ),
+                        child: SizedBox(
+                          width: 300,
+                          height: 300,
+                        ),
                       ),
                     ),
                   ),
