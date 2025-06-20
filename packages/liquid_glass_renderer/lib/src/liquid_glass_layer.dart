@@ -515,18 +515,14 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
       // Update control points texture if needed
       if (!_listsEqual(_lastControlPoints, controlPoints)) {
         _lastControlPoints = List.from(controlPoints);
-        _controlPointsTexture = null;
-      }
 
-      // Create control points texture if needed (async, non-blocking)
-      if (_controlPointsTexture == null) {
+        // Create control points texture if needed (async, non-blocking)
         _createControlPointsTexture(controlPoints).then((texture) {
           _controlPointsTexture = texture;
           markNeedsPaint(); // Repaint when texture is ready
         }).catchError((e) {
           debugPrint('Failed to create control points texture: $e');
         });
-        // Continue rendering without early return to avoid crashes
       }
 
       try {

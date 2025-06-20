@@ -78,6 +78,45 @@ class MainApp extends HookWidget {
       brightness: Brightness.dark,
       seedColor: Color(0xFF287390),
     );
+
+    final beginShape = StarShapeBorder(
+      corners: 6,
+      inset: 40.toPercentLength,
+      cornerRadius: 25.toPercentLength,
+      insetRadius: 25.toPercentLength,
+      cornerStyle: CornerStyle.rounded,
+      insetStyle: CornerStyle.rounded,
+    );
+
+    final endShape = CircleShapeBorder(
+     
+    );
+
+    final shapeTweenController = useAnimationController(
+      duration:
+          const Duration(seconds: 8), // Double the duration for full cycle
+      lowerBound: 0,
+      upperBound: 1,
+    )..repeat();
+
+    final shapeTweenCurved = CurvedAnimation(
+      parent: shapeTweenController,
+      curve: Curves.easeInOut,
+    );
+
+    final shapeTweenRaw = useAnimation(shapeTweenCurved);
+
+    // Create back-and-forth motion: 0->1->0 within one full cycle
+    final shapeTweenValue = shapeTweenRaw <= 0.5
+        ? shapeTweenRaw * 2 // 0 to 0.5 becomes 0 to 1
+        : (1 - shapeTweenRaw) * 2; // 0.5 to 1 becomes 1 to 0
+
+    final shapeTween = MorphableShapeBorderTween(
+      begin: beginShape,
+      end: endShape,
+    );
+
+    // Use AnimatedBuilder to rebuild when animation changes
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: ThemeData.from(
@@ -93,50 +132,29 @@ class MainApp extends HookWidget {
             return Background(
               child: Stack(
                 children: [
-                  Positioned(
-                    left: glassOffset.value.dx,
-                    top: glassOffset.value.dy,
-                    child: GestureDetector(
-                      onPanUpdate: (details) {
-                        // Get the render box to calculate relative position
-                        final RenderBox renderBox =
-                            context.findRenderObject() as RenderBox;
-                        final size = renderBox.size;
-
-                        final x = glassOffset.value.dx + details.delta.dx;
-                        final y = glassOffset.value.dy + details.delta.dy;
-
-                        // Clamp the values to stay within bounds
-                        glassOffset.value = Offset(
-                          x.clamp(0, size.width),
-                          y.clamp(0, size.height),
-                        );
-                      },
-                      behavior: HitTestBehavior.opaque,
-                      child: LiquidGlass(
-                          blur: 2,
-                          glassContainsChild: false,
-                          settings: LiquidGlassSettings(
-                            thickness: thickness,
-                            lightIntensity: lightIntensityNotifier.value,
-                            ambientStrength: ambientStrengthNotifier.value,
-                            chromaticAberration: chromaticAberration,
-                            glassColor: color.withValues(
-                              alpha: color.a * thickness / 10,
-                            ),
-                            lightAngle: lightAngle,
-                            blend: blend,
-                          ),
-                          shape: MorphableShape(
-                            morphableShapeBorder: PolygonShapeBorder(
-                              sides: 6,
-                              cornerRadius: Length(30),
-                            ),
-                          ),
-                          child: SizedBox(
-                            width: 240,
-                            height: 240,
-                          )),
+                  Align(
+                    alignment: Alignment.center,
+                    child: LiquidGlass(
+                      blur: 2,
+                      glassContainsChild: true,
+                      settings: LiquidGlassSettings(
+                        thickness: thickness,
+                        lightIntensity: lightIntensityNotifier.value,
+                        ambientStrength: ambientStrengthNotifier.value,
+                        chromaticAberration: chromaticAberration,
+                        glassColor: color.withValues(
+                          alpha: color.a * thickness / 10,
+                        ),
+                        lightAngle: lightAngle,
+                        blend: blend,
+                      ),
+                      shape: MorphableShape(
+                        morphableShapeBorder: shapeTween.lerp(shapeTweenValue)!,
+                      ),
+                      child: SizedBox(
+                        width: 300,
+                        height: 300,
+                      ),
                     ),
                   ),
                 ],
