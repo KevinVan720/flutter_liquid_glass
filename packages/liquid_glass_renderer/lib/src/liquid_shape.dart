@@ -1,7 +1,6 @@
 import 'package:equatable/equatable.dart';
 import 'package:flutter/material.dart';
 import 'package:liquid_glass_renderer/liquid_glass_renderer.dart';
-import 'package:morphable_shape/morphable_shape.dart';
 
 /// Represents a shape that can be used by a [LiquidGlass] widget.
 sealed class LiquidShape extends OutlinedBorder with EquatableMixin {
@@ -149,96 +148,30 @@ class LiquidRoundedRectangle extends LiquidShape {
   List<Object?> get props => [...super.props, borderRadius];
 }
 
-/// Represents an arbitrary morphable shape that can be used by a [LiquidGlass] widget.
-///
-/// This shape uses control points generated from a [morphable_shape] package's
-/// [OutlinedShapeBorder] to create liquid glass effects for complex shapes.
-class MorphableShape extends LiquidShape {
-  /// Creates a new [MorphableShape] with the given [morphableShapeBorder].
-  const MorphableShape({
-    required this.morphableShapeBorder,
-  });
-
-  /// The morphable shape border that defines the shape.
-  final MorphableShapeBorder morphableShapeBorder;
-
-  @override
-  OutlinedBorder get _equivalentOutlinedBorder => const OvalBorder();
-
-  @override
-  ShapeBorder scale(double t) {
-    return MorphableShape(
-      morphableShapeBorder: morphableShapeBorder,
-    );
-  }
-
-  @override
-  OutlinedBorder copyWith({BorderSide? side}) {
-    return MorphableShape(
-      morphableShapeBorder: morphableShapeBorder,
-    );
-  }
-
-  @override
-  Path getInnerPath(Rect rect, {TextDirection? textDirection}) {
-    return morphableShapeBorder.getInnerPath(
-      rect,
-      textDirection: textDirection,
-    );
-  }
-
-  @override
-  Path getOuterPath(Rect rect, {TextDirection? textDirection}) {
-    return morphableShapeBorder.getOuterPath(
-      rect,
-      textDirection: textDirection,
-    );
-  }
-
-  @override
-  void paint(Canvas canvas, Rect rect, {TextDirection? textDirection}) {
-    morphableShapeBorder.paint(canvas, rect, textDirection: textDirection);
-  }
-
-  @override
-  List<Object?> get props => [morphableShapeBorder];
-}
-
-/// Represents a quadratic bezier curve segment with start, control, and end points.
-class BezierSegment extends Equatable {
-  /// Creates a new [BezierSegment] with the given start, control, and end points.
-  const BezierSegment({
-    required this.startPoint,
-    required this.controlPoint,
-    required this.endPoint,
-  });
-
-  /// The starting point for the quadratic bezier curve.
-  final Offset startPoint;
-
-  /// The control point for the quadratic bezier curve.
-  final Offset controlPoint;
-
-  /// The end point for the quadratic bezier curve.
-  final Offset endPoint;
-
-  @override
-  List<Object?> get props => [startPoint, controlPoint, endPoint];
-}
-
 /// Represents a custom bezier shape that can be used by a [LiquidGlass] widget.
 ///
-/// This shape is defined by a series of quadratic bezier curve segments.
-/// Each segment contains its own start point, control point, and end point.
+/// This shape is defined by a flat list of control points that form quadratic
+/// bezier curves. Every 3 consecutive points form a quadratic bezier curve:
+/// [startPoint, controlPoint, endPoint, startPoint2, controlPoint2, endPoint2, ...]
+///
+/// The points should be normalized (0.0 to 1.0) and will be scaled to fit
+/// within the widget bounds.
 class BezierShape extends LiquidShape {
-  /// Creates a new [BezierShape] with the given bezier segments.
+  /// Creates a new [BezierShape] with the given control points.
+  ///
+  /// The [controlPoints] should contain points in groups of 3, where each group
+  /// represents a quadratic bezier curve: [start, control, end].
+  /// Points should be normalized between 0.0 and 1.0.
   const BezierShape({
-    required this.segments,
+    required this.controlPoints,
     super.side = BorderSide.none,
   });
 
-  /// The list of quadratic bezier curve segments.
-  final List<BezierSegment> segments;
+  /// The list of control points forming quadratic bezier curves.
+  ///
+  /// Every 3 consecutive points form a quadratic bezier curve.
+  /// Points should be normalized (0.0 to 1.0).
+  final List<Offset> controlPoints;
 
   @override
   OutlinedBorder get _equivalentOutlinedBorder => const OvalBorder();
@@ -256,7 +189,12 @@ class BezierShape extends LiquidShape {
   Path _createBezierPath(Rect rect) {
     final path = Path();
 
-    if (segments.isEmpty) {
+    if (controlPoints.isEmpty) {
+      return path;
+    }
+
+    // Ensure we have at least 3 points for a quadratic bezier curve
+    if (controlPoints.length < 3) {
       return path;
     }
 
@@ -266,23 +204,26 @@ class BezierShape extends LiquidShape {
     final offsetX = rect.left;
     final offsetY = rect.top;
 
-    // Move to the starting point of the first segment (scaled to rect)
-    final firstSegment = segments.first;
+    // Move to the starting point (first control point, scaled to rect)
     final scaledStartPoint = Offset(
-      offsetX + firstSegment.startPoint.dx * scaleX,
-      offsetY + firstSegment.startPoint.dy * scaleY,
+      offsetX + controlPoints[0].dx * scaleX,
+      offsetY + controlPoints[0].dy * scaleY,
     );
     path.moveTo(scaledStartPoint.dx, scaledStartPoint.dy);
 
-    // Add each quadratic bezier curve segment
-    for (final segment in segments) {
+    // Process control points in groups of 3 (start, control, end)
+    // Skip the first point since we already moved to it
+    for (int i = 1; i < controlPoints.length - 1; i += 2) {
+      // Check if we have enough points for a complete bezier curve
+      if (i + 1 >= controlPoints.length) break;
+
       final controlPoint = Offset(
-        offsetX + segment.controlPoint.dx * scaleX,
-        offsetY + segment.controlPoint.dy * scaleY,
+        offsetX + controlPoints[i].dx * scaleX,
+        offsetY + controlPoints[i].dy * scaleY,
       );
       final endPoint = Offset(
-        offsetX + segment.endPoint.dx * scaleX,
-        offsetY + segment.endPoint.dy * scaleY,
+        offsetX + controlPoints[i + 1].dx * scaleX,
+        offsetY + controlPoints[i + 1].dy * scaleY,
       );
 
       path.quadraticBezierTo(
@@ -315,29 +256,26 @@ class BezierShape extends LiquidShape {
   @override
   BezierShape copyWith({
     BorderSide? side,
-    List<BezierSegment>? segments,
+    List<Offset>? controlPoints,
     bool? closePath,
   }) {
     return BezierShape(
       side: side ?? this.side,
-      segments: segments ?? this.segments,
+      controlPoints: controlPoints ?? this.controlPoints,
     );
   }
 
   @override
   ShapeBorder scale(double t) {
     return BezierShape(
-      segments: segments
-          .map((segment) => BezierSegment(
-                startPoint: segment.startPoint * t,
-                controlPoint: segment.controlPoint * t,
-                endPoint: segment.endPoint * t,
-              ))
-          .toList(),
+      controlPoints: controlPoints.map((point) => point * t).toList(),
       side: side.scale(t),
     );
   }
 
   @override
-  List<Object?> get props => [...super.props, segments];
+  List<Object?> get props => [
+        ...super.props,
+        controlPoints,
+      ];
 }

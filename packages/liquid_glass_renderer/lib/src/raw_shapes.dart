@@ -1,13 +1,10 @@
 // ignore_for_file: dead_code, deprecated_member_use_from_same_package
 
 import 'dart:ui' as ui;
-import 'dart:typed_data';
-import 'dart:async';
 import 'package:equatable/equatable.dart';
 import 'package:flutter/material.dart';
 import 'package:liquid_glass_renderer/src/liquid_shape.dart';
 import 'package:meta/meta.dart';
-import 'package:morphable_shape/morphable_shape.dart';
 
 @internal
 enum RawShapeType {
@@ -15,38 +12,35 @@ enum RawShapeType {
   squircle,
   ellipse,
   roundedRectangle,
-  morphable,
+  bezier,
 }
 
-/// Cached data for morphable shapes to avoid recomputation
+/// Cached data for bezier shapes to avoid recomputation
 @internal
-class MorphableShapeCache with EquatableMixin {
-  const MorphableShapeCache({
-    required this.shapeBorder,
+class BezierShapeCache with EquatableMixin {
+  const BezierShapeCache({
     required this.rect,
-    required this.controlPoints,
+    required this.scaledControlPoints,
     this.texture,
   });
 
-  final MorphableShapeBorder shapeBorder;
   final Rect rect;
-  final List<Offset> controlPoints;
+  final List<Offset> scaledControlPoints;
   final ui.Image? texture;
 
   /// Create a copy with updated texture
-  MorphableShapeCache copyWith({
+  BezierShapeCache copyWith({
     ui.Image? texture,
   }) {
-    return MorphableShapeCache(
-      shapeBorder: shapeBorder,
+    return BezierShapeCache(
       rect: rect,
-      controlPoints: controlPoints,
+      scaledControlPoints: scaledControlPoints,
       texture: texture ?? this.texture,
     );
   }
 
   @override
-  List<Object?> get props => [shapeBorder, rect, controlPoints, texture];
+  List<Object?> get props => [rect, scaledControlPoints, texture];
 }
 
 @internal
@@ -56,7 +50,7 @@ class RawShape with EquatableMixin {
     required this.center,
     required this.size,
     required this.cornerRadius,
-    this.morphableCache,
+    this.bezierCache,
   });
 
   factory RawShape.fromLiquidGlassShape(
@@ -88,10 +82,10 @@ class RawShape with EquatableMixin {
           size: size,
           cornerRadius: shape.borderRadius.x,
         );
-      case MorphableShape():
-        // For morphable shapes, we'll handle caching separately
+      case BezierShape():
+        // For bezier shapes, we'll handle caching separately
         return RawShape(
-          type: RawShapeType.morphable,
+          type: RawShapeType.bezier,
           center: center,
           size: size,
           cornerRadius: 0,
@@ -110,28 +104,28 @@ class RawShape with EquatableMixin {
   final Offset center;
   final Size size;
   final double cornerRadius;
-  final MorphableShapeCache? morphableCache;
+  final BezierShapeCache? bezierCache;
 
   Offset get topLeft =>
       Offset(center.dx - size.width / 2, center.dy - size.height / 2);
 
   Rect get rect => topLeft & size;
 
-  /// Create a copy with morphable cache
+  /// Create a copy with bezier cache
   RawShape copyWith({
-    MorphableShapeCache? morphableCache,
+    BezierShapeCache? bezierCache,
   }) {
     return RawShape(
       type: type,
       center: center,
       size: size,
       cornerRadius: cornerRadius,
-      morphableCache: morphableCache,
+      bezierCache: bezierCache,
     );
   }
 
   @override
-  List<Object?> get props => [type, center, size, cornerRadius, morphableCache];
+  List<Object?> get props => [type, center, size, cornerRadius, bezierCache];
 }
 
 void _assertSameRadius(Radius borderRadius) {

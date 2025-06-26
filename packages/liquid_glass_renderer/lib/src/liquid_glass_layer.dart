@@ -14,7 +14,6 @@ import 'package:liquid_glass_renderer/src/liquid_glass_settings.dart';
 import 'package:liquid_glass_renderer/src/liquid_shape.dart';
 import 'package:liquid_glass_renderer/src/raw_shapes.dart';
 import 'package:meta/meta.dart';
-import 'package:morphable_shape/morphable_shape.dart';
 
 /// Represents a layer of multiple [LiquidGlass] shapes that can flow together
 /// and have shared [LiquidGlassSettings].
@@ -256,48 +255,45 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
             size: rect.size,
           );
 
-          // Handle morphable shape caching
-          if (rawShape.type == RawShapeType.morphable &&
-              shapeRender.shape is MorphableShape) {
-            final morphableShape = shapeRender.shape as MorphableShape;
+          // Handle bezier shape caching
+          if (rawShape.type == RawShapeType.bezier &&
+              shapeRender.shape is BezierShape) {
+            final bezierShape = shapeRender.shape as BezierShape;
             final shapeRect = Offset.zero & rect.size;
 
             // Check if we need to update the cache
-            final existingCache = rawShape.morphableCache;
-            final needsUpdate = existingCache == null ||
-                existingCache.shapeBorder !=
-                    morphableShape.morphableShapeBorder ||
-                existingCache.rect != shapeRect;
+            final existingCache = rawShape.bezierCache;
+            final needsUpdate =
+                existingCache == null || existingCache.rect != shapeRect;
 
             if (needsUpdate) {
-              // Generate new control points
-              final controlPoints = _extractControlPointsFromMorphableShape(
-                morphableShape.morphableShapeBorder,
+              // Generate scaled control points from bezier shape
+              final scaledControlPoints = _extractControlPointsFromBezierShape(
+                bezierShape,
                 shapeRect,
               );
 
               // Create new cache (texture will be generated asynchronously)
-              final newCache = MorphableShapeCache(
-                shapeBorder: morphableShape.morphableShapeBorder,
+              final newCache = BezierShapeCache(
                 rect: shapeRect,
-                controlPoints: controlPoints,
+                scaledControlPoints: scaledControlPoints,
               );
 
-              rawShape = rawShape.copyWith(morphableCache: newCache);
+              rawShape = rawShape.copyWith(bezierCache: newCache);
 
               // Generate texture asynchronously if we have valid control points
-              if (controlPoints.isNotEmpty) {
-                _createControlPointsTexture(controlPoints).then((texture) {
+              if (scaledControlPoints.isNotEmpty) {
+                _createControlPointsTexture(scaledControlPoints)
+                    .then((texture) {
                   // Update the cache with the texture
                   final updatedCache = newCache.copyWith(texture: texture);
                   final updatedShape =
-                      rawShape.copyWith(morphableCache: updatedCache);
+                      rawShape.copyWith(bezierCache: updatedCache);
 
                   // Store the updated shape back (we'll need a way to update this)
                   markNeedsPaint();
                 }).catchError((e) {
-                  debugPrint(
-                      'Failed to create texture for morphable shape: $e');
+                  debugPrint('Failed to create texture for bezier shape: $e');
                 });
               }
             }
@@ -314,100 +310,35 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
     return result;
   }
 
-  /// Generate control points for morphable shapes
+  /// Generate control points for bezier shapes
   List<Offset> _generateControlPointsFromShape(LiquidShape shape, Rect rect) {
-    if (shape is MorphableShape) {
-      return _extractControlPointsFromMorphableShape(
-          shape.morphableShapeBorder, rect);
+    if (shape is BezierShape) {
+      return _extractControlPointsFromBezierShape(shape, rect);
     } else {
       // For other shapes, create a fallback control points representation
       return _createFallbackControlPoints(rect);
     }
   }
 
-  List<Offset> _extractControlPointsFromMorphableShape(
-      MorphableShapeBorder shapeBorder, Rect rect) {
+  List<Offset> _extractControlPointsFromBezierShape(
+      BezierShape bezierShape, Rect rect) {
     try {
-      final dynamicPath = shapeBorder.generateInnerDynamicPath(rect);
-      return _extractControlPointsFromDynamicPath(dynamicPath);
+      final scaledControlPoints = <Offset>[];
+
+      // Scale control points to the rect
+      for (final point in bezierShape.controlPoints) {
+        final scaledPoint = Offset(
+          point.dx * rect.width + rect.left,
+          point.dy * rect.height + rect.top,
+        );
+        scaledControlPoints.add(scaledPoint);
+      }
+
+      return scaledControlPoints;
     } catch (e) {
-      debugPrint('Error extracting control points: $e');
+      debugPrint('Error extracting control points from BezierShape: $e');
       return _createFallbackControlPoints(rect);
     }
-  }
-
-  List<Offset> _extractControlPointsFromDynamicPath(DynamicPath dynamicPath) {
-    final controlPoints = <Offset>[];
-
-    try {
-      for (int i = 0; i < dynamicPath.nodes.length; i++) {
-        final pathSegment = dynamicPath.getNextPathControlPointsAt(i);
-        final processedPoints = _processPathSegment(pathSegment, i == 0);
-        controlPoints.addAll(processedPoints);
-      }
-    } catch (e) {
-      debugPrint('Error processing DynamicPath: $e');
-      return [];
-    }
-
-    return controlPoints;
-  }
-
-  List<Offset> _processPathSegment(
-      List<Offset> pathSegment, bool isFirstSegment) {
-    final points = <Offset>[];
-
-    if (pathSegment.length == 4) {
-      // Cubic Bézier curve
-      final subdivided = _subdivideCubicBezier(
-        pathSegment[0],
-        pathSegment[1],
-        pathSegment[2],
-        pathSegment[3],
-      );
-      final startIndex = isFirstSegment ? 0 : 1;
-      points.addAll(subdivided.skip(startIndex));
-    } else if (pathSegment.length == 2) {
-      // Linear segment - convert to quadratic
-      final quadraticPoints =
-          _convertLinearToQuadratic(pathSegment[0], pathSegment[1]);
-      final startIndex = isFirstSegment ? 0 : 1;
-      points.addAll(quadraticPoints.skip(startIndex));
-    }
-
-    return points;
-  }
-
-  List<Offset> _subdivideCubicBezier(
-      Offset p0, Offset p1, Offset p2, Offset p3) {
-    final points = <Offset>[];
-    for (int i = 0; i <= cubicSubdivisionSegments; i++) {
-      final t = i / cubicSubdivisionSegments;
-      points.add(_cubicBezierPoint(p0, p1, p2, p3, t));
-    }
-    return points;
-  }
-
-  Offset _cubicBezierPoint(
-      Offset p0, Offset p1, Offset p2, Offset p3, double t) {
-    final u = 1 - t;
-    final tt = t * t;
-    final uu = u * u;
-    final uuu = uu * u;
-    final ttt = tt * t;
-
-    return Offset(
-      uuu * p0.dx + 3 * uu * t * p1.dx + 3 * u * tt * p2.dx + ttt * p3.dx,
-      uuu * p0.dy + 3 * uu * t * p1.dy + 3 * u * tt * p2.dy + ttt * p3.dy,
-    );
-  }
-
-  List<Offset> _convertLinearToQuadratic(Offset startPoint, Offset endPoint) {
-    final controlPoint = Offset(
-      (startPoint.dx + endPoint.dx) * 0.5,
-      (startPoint.dy + endPoint.dy) * 0.5,
-    );
-    return [startPoint, controlPoint, endPoint];
   }
 
   List<Offset> _createFallbackControlPoints(Rect rect) {
@@ -445,10 +376,10 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
 
           List<Offset> controlPoints;
 
-          if (rawShape.type == RawShapeType.morphable &&
-              rawShape.morphableCache != null) {
+          if (rawShape.type == RawShapeType.bezier &&
+              rawShape.bezierCache != null) {
             // Use cached control points
-            controlPoints = rawShape.morphableCache!.controlPoints;
+            controlPoints = rawShape.bezierCache!.scaledControlPoints;
           } else {
             // Fallback to generating control points (for non-morphable shapes)
             final shapeRect = shapeRelativeToLayer & shapeRender.size;
@@ -474,15 +405,15 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
     return allControlPoints;
   }
 
-  /// Get the combined texture from all morphable shapes
-  ui.Image? _getCombinedMorphableTexture(
+  /// Get the combined texture from all bezier shapes
+  ui.Image? _getCombinedBezierTexture(
       List<(RenderLiquidGlass, RawShape)> shapes) {
     // For now, return the first available texture
     // In the future, we could combine multiple textures
     for (final (_, rawShape) in shapes) {
-      if (rawShape.type == RawShapeType.morphable &&
-          rawShape.morphableCache?.texture != null) {
-        return rawShape.morphableCache!.texture;
+      if (rawShape.type == RawShapeType.bezier &&
+          rawShape.bezierCache?.texture != null) {
+        return rawShape.bezierCache!.texture;
       }
     }
     return null;
@@ -577,9 +508,9 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
         debugPrint('Error setting basic shader uniforms: $e');
       }
     } else {
-      // Use morphable shapes with control points
+      // Use bezier shapes with control points
       // Try to get cached texture first
-      final cachedTexture = _getCombinedMorphableTexture(shapes);
+      final cachedTexture = _getCombinedBezierTexture(shapes);
 
       // Fallback: Update control points texture if needed and no cached texture available
       if (cachedTexture == null &&
