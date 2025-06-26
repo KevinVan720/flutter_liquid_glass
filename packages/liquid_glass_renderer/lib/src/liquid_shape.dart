@@ -203,3 +203,141 @@ class MorphableShape extends LiquidShape {
   @override
   List<Object?> get props => [morphableShapeBorder];
 }
+
+/// Represents a quadratic bezier curve segment with start, control, and end points.
+class BezierSegment extends Equatable {
+  /// Creates a new [BezierSegment] with the given start, control, and end points.
+  const BezierSegment({
+    required this.startPoint,
+    required this.controlPoint,
+    required this.endPoint,
+  });
+
+  /// The starting point for the quadratic bezier curve.
+  final Offset startPoint;
+
+  /// The control point for the quadratic bezier curve.
+  final Offset controlPoint;
+
+  /// The end point for the quadratic bezier curve.
+  final Offset endPoint;
+
+  @override
+  List<Object?> get props => [startPoint, controlPoint, endPoint];
+}
+
+/// Represents a custom bezier shape that can be used by a [LiquidGlass] widget.
+///
+/// This shape is defined by a series of quadratic bezier curve segments.
+/// Each segment contains its own start point, control point, and end point.
+class BezierShape extends LiquidShape {
+  /// Creates a new [BezierShape] with the given bezier segments.
+  const BezierShape({
+    required this.segments,
+    super.side = BorderSide.none,
+  });
+
+  /// The list of quadratic bezier curve segments.
+  final List<BezierSegment> segments;
+
+  @override
+  OutlinedBorder get _equivalentOutlinedBorder => const OvalBorder();
+
+  @override
+  Path getInnerPath(Rect rect, {TextDirection? textDirection}) {
+    return _createBezierPath(rect);
+  }
+
+  @override
+  Path getOuterPath(Rect rect, {TextDirection? textDirection}) {
+    return _createBezierPath(rect);
+  }
+
+  Path _createBezierPath(Rect rect) {
+    final path = Path();
+
+    if (segments.isEmpty) {
+      return path;
+    }
+
+    // Scale the points to fit within the rect
+    final scaleX = rect.width;
+    final scaleY = rect.height;
+    final offsetX = rect.left;
+    final offsetY = rect.top;
+
+    // Move to the starting point of the first segment (scaled to rect)
+    final firstSegment = segments.first;
+    final scaledStartPoint = Offset(
+      offsetX + firstSegment.startPoint.dx * scaleX,
+      offsetY + firstSegment.startPoint.dy * scaleY,
+    );
+    path.moveTo(scaledStartPoint.dx, scaledStartPoint.dy);
+
+    // Add each quadratic bezier curve segment
+    for (final segment in segments) {
+      final controlPoint = Offset(
+        offsetX + segment.controlPoint.dx * scaleX,
+        offsetY + segment.controlPoint.dy * scaleY,
+      );
+      final endPoint = Offset(
+        offsetX + segment.endPoint.dx * scaleX,
+        offsetY + segment.endPoint.dy * scaleY,
+      );
+
+      path.quadraticBezierTo(
+        controlPoint.dx,
+        controlPoint.dy,
+        endPoint.dx,
+        endPoint.dy,
+      );
+    }
+
+    path.close();
+
+    return path;
+  }
+
+  @override
+  void paint(Canvas canvas, Rect rect, {TextDirection? textDirection}) {
+    if (side == BorderSide.none) {
+      return;
+    }
+
+    final paint = Paint()
+      ..color = side.color
+      ..strokeWidth = side.width
+      ..style = PaintingStyle.stroke;
+
+    canvas.drawPath(_createBezierPath(rect), paint);
+  }
+
+  @override
+  BezierShape copyWith({
+    BorderSide? side,
+    List<BezierSegment>? segments,
+    bool? closePath,
+  }) {
+    return BezierShape(
+      side: side ?? this.side,
+      segments: segments ?? this.segments,
+    );
+  }
+
+  @override
+  ShapeBorder scale(double t) {
+    return BezierShape(
+      segments: segments
+          .map((segment) => BezierSegment(
+                startPoint: segment.startPoint * t,
+                controlPoint: segment.controlPoint * t,
+                endPoint: segment.endPoint * t,
+              ))
+          .toList(),
+      side: side.scale(t),
+    );
+  }
+
+  @override
+  List<Object?> get props => [...super.props, segments];
+}
