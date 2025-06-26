@@ -31,6 +31,162 @@ final chromaticAberrationNotifier = ValueNotifier<double>(1);
 
 final ambientStrengthNotifier = ValueNotifier<double>(0.5);
 
+/// Convert a MorphableShapeBorder to a BezierShape by extracting control points
+BezierShape morphableShapeToBezierShape(MorphableShapeBorder shapeBorder) {
+  try {
+    // Use a normalized rect to extract control points
+    const rect = Rect.fromLTWH(0, 0, 1, 1);
+    final dynamicPath = shapeBorder.generateInnerDynamicPath(rect);
+    final controlPoints = _extractControlPointsFromDynamicPath(dynamicPath);
+
+    return BezierShape(controlPoints: controlPoints);
+  } catch (e) {
+    debugPrint('Error converting MorphableShape to BezierShape: $e');
+    // Fallback to a simple circle
+    return BezierShape(controlPoints: _createFallbackControlPoints());
+  }
+}
+
+List<Offset> _extractControlPointsFromDynamicPath(DynamicPath dynamicPath) {
+  final controlPoints = <Offset>[];
+
+  try {
+    for (int i = 0; i < dynamicPath.nodes.length; i++) {
+      final pathSegment = dynamicPath.getNextPathControlPointsAt(i);
+      final processedPoints = _processPathSegment(pathSegment, i == 0);
+      controlPoints.addAll(processedPoints);
+    }
+  } catch (e) {
+    debugPrint('Error processing DynamicPath: $e');
+    return _createFallbackControlPoints();
+  }
+
+  return controlPoints;
+}
+
+List<Offset> _processPathSegment(
+  List<Offset> pathSegment,
+  bool isFirstSegment,
+) {
+  final points = <Offset>[];
+  const cubicSubdivisionSegments = 3;
+
+  if (pathSegment.length == 4) {
+    // Cubic Bézier curve - subdivide into quadratic segments
+    final subdivided = _subdivideCubicBezier(
+      pathSegment[0],
+      pathSegment[1],
+      pathSegment[2],
+      pathSegment[3],
+      cubicSubdivisionSegments,
+    );
+    final startIndex = isFirstSegment ? 0 : 1;
+    points.addAll(subdivided.skip(startIndex));
+  } else if (pathSegment.length == 2) {
+    // Linear segment - convert to quadratic
+    final quadraticPoints = _convertLinearToQuadratic(
+      pathSegment[0],
+      pathSegment[1],
+    );
+    final startIndex = isFirstSegment ? 0 : 1;
+    points.addAll(quadraticPoints.skip(startIndex));
+  }
+
+  return points;
+}
+
+List<Offset> _subdivideCubicBezier(
+  Offset p0,
+  Offset p1,
+  Offset p2,
+  Offset p3,
+  int segments,
+) {
+  final points = <Offset>[];
+  for (int i = 0; i <= segments; i++) {
+    final t = i / segments;
+    points.add(_cubicBezierPoint(p0, p1, p2, p3, t));
+  }
+  return points;
+}
+
+Offset _cubicBezierPoint(Offset p0, Offset p1, Offset p2, Offset p3, double t) {
+  final u = 1 - t;
+  final tt = t * t;
+  final uu = u * u;
+  final uuu = uu * u;
+  final ttt = tt * t;
+
+  return Offset(
+    uuu * p0.dx + 3 * uu * t * p1.dx + 3 * u * tt * p2.dx + ttt * p3.dx,
+    uuu * p0.dy + 3 * uu * t * p1.dy + 3 * u * tt * p2.dy + ttt * p3.dy,
+  );
+}
+
+List<Offset> _convertLinearToQuadratic(Offset startPoint, Offset endPoint) {
+  final controlPoint = Offset(
+    (startPoint.dx + endPoint.dx) * 0.5,
+    (startPoint.dy + endPoint.dy) * 0.5,
+  );
+  return [startPoint, controlPoint, endPoint];
+}
+
+List<Offset> _createFallbackControlPoints() {
+  // Create a simple circle as fallback
+  final points = <Offset>[];
+  const numSegments = 8;
+  const center = Offset(0.5, 0.5);
+  const radius = 0.4;
+
+  for (int i = 0; i < numSegments; i++) {
+    final angle = (i * 2 * pi) / numSegments;
+    final nextAngle = ((i + 1) * 2 * pi) / numSegments;
+
+    final startPoint = Offset(
+      center.dx + radius * cos(angle),
+      center.dy + radius * sin(angle),
+    );
+
+    final endPoint = Offset(
+      center.dx + radius * cos(nextAngle),
+      center.dy + radius * sin(nextAngle),
+    );
+
+    // Control point for smooth circular curve
+    final controlAngle = (angle + nextAngle) * 0.5;
+    final controlRadius = radius * 1.2;
+    final controlPoint = Offset(
+      center.dx + controlRadius * cos(controlAngle),
+      center.dy + controlRadius * sin(controlAngle),
+    );
+
+    if (i == 0) {
+      points.add(startPoint);
+    }
+    points.addAll([controlPoint, endPoint]);
+  }
+
+  return points;
+}
+
+/// Interpolate between two BezierShapes
+BezierShape lerpBezierShapes(BezierShape a, BezierShape b, double t) {
+  final maxLength = max(a.controlPoints.length, b.controlPoints.length);
+  final result = <Offset>[];
+
+  for (int i = 0; i < maxLength; i++) {
+    final pointA = i < a.controlPoints.length
+        ? a.controlPoints[i]
+        : a.controlPoints.last;
+    final pointB = i < b.controlPoints.length
+        ? b.controlPoints[i]
+        : b.controlPoints.last;
+    result.add(Offset.lerp(pointA, pointB, t)!);
+  }
+
+  return BezierShape(controlPoints: result);
+}
+
 class MainApp extends HookWidget {
   const MainApp({super.key});
 
@@ -90,9 +246,9 @@ class MainApp extends HookWidget {
 
     final endShape = CircleShapeBorder();
 
-    final shapeTweenController = useAnimationController(
+     final shapeTweenController = useAnimationController(
       duration:
-          const Duration(seconds: 8), // Double the duration for full cycle
+          const Duration(seconds: 5), // Double the duration for full cycle
       lowerBound: 0,
       upperBound: 1,
     )..repeat();
@@ -131,10 +287,12 @@ class MainApp extends HookWidget {
               child: Stack(
                 children: [
                   Positioned(
-                    left: glassOffset.value.dx +
+                    left:
+                        glassOffset.value.dx +
                         MediaQuery.of(context).size.width / 2 -
                         150, // Center offset (300/2 = 150)
-                    top: glassOffset.value.dy +
+                    top:
+                        glassOffset.value.dy +
                         MediaQuery.of(context).size.height / 2 -
                         150,
                     child: GestureDetector(
@@ -156,14 +314,8 @@ class MainApp extends HookWidget {
                           lightAngle: lightAngle,
                           blend: blend,
                         ),
-                        shape: MorphableShape(
-                          //morphableShapeBorder: shapeTween.lerp(shapeTweenValue)!,
-                          morphableShapeBorder: beginShape,
-                        ),
-                        child: SizedBox(
-                          width: 300,
-                          height: 300,
-                        ),
+                        shape: morphableShapeToBezierShape(shapeTween.lerp(shapeTweenValue)!),
+                        child: SizedBox(width: 300, height: 300),
                       ),
                     ),
                   ),
@@ -194,9 +346,7 @@ class Background extends HookWidget {
               fit: BoxFit.cover,
             ),
             shape: RoundedSuperellipseBorder(
-              borderRadius: BorderRadius.only(
-                bottomLeft: Radius.circular(64),
-              ),
+              borderRadius: BorderRadius.only(bottomLeft: Radius.circular(64)),
             ),
           ),
           child: Stack(
@@ -208,8 +358,7 @@ class Background extends HookWidget {
                   padding: const EdgeInsets.all(24.0),
                   child: Text(
                     'Liquid\nGlass\nRenderer',
-                    style: GoogleFonts.lexendDecaTextTheme()
-                        .headlineLarge
+                    style: GoogleFonts.lexendDecaTextTheme().headlineLarge
                         ?.copyWith(
                           fontSize: 120,
                           height: 1,
