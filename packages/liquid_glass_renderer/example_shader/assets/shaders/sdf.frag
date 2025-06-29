@@ -34,26 +34,38 @@ layout(location = 0) out vec4 fragColor;
 // control points.
 
 // Constants
-const int CAPACITY = 32; // Control polygon capacity
+const int CAPACITY = 512; // Control polygon capacity (supports complex glyphs)
 const float INF   = 1.0 / 0.0;
 const float SQRT3 = 1.732050807568877;
 
-// Function to read a control point from the texture
-vec2 getControlPoint(int index) {
-    if (index >= int(uNumPoints)) {
-        return vec2(0.0);
-    }
-    
-    // Sample from texture: each point is stored as a pixel
-    // x-coordinate in red channel, y-coordinate in green channel
+// Utility helpers ------------------------------------------------------------
+
+// Sample the raw texel that stores a control point or a separator. Each pixel
+// encodes: R=x, G=y (both in [0,1] space) and B used for meta-data.
+vec4 _sampleTexel(int index) {
     float u = (float(index) + 0.5) / uNumPoints; // Center of pixel
-    vec4 texel = texture(uControlPointsTexture, vec2(u, 0.5));
-    
-    // Decode from [0,1] texture space back to [-1,1] coordinate space
-    float x = texel.r * 2.0 - 1.0;
-    float y = texel.g * 2.0 - 1.0;
-    
-    return vec2(x, y);
+    return texture(uControlPointsTexture, vec2(u, 0.5));
+}
+
+// Identify separator pixels (blue ≃ 1.0)
+bool isSeparator(int idx) {
+    return _sampleTexel(idx).b > 0.9;
+}
+
+// Orientation is stored in the first pixel of every contour: blue ≃ 0.25 → +1
+// (CCW), blue ≃ 0.75 → −1 (CW). Any other pixel returns 0.
+float contourOrientation(int idx) {
+    float b = _sampleTexel(idx).b;
+    if (b > 0.9) return 0.0; // separator
+    if (b > 0.5) return -1.0; // CW
+    if (b > 0.0) return 1.0;  // CCW (first point)
+    return 0.0;               // regular point
+}
+
+// Decode control-point coordinates from a texel (regardless of B)
+vec2 getPoint(int idx) {
+    vec4 t = _sampleTexel(idx);
+    return vec2(t.r * 2.0 - 1.0, t.g * 2.0 - 1.0);
 }
 
 // Cross-product of two 2D vectors
@@ -168,62 +180,154 @@ float sdf_control_segment(in vec2 p, in vec2 A, in vec2 B, in vec2 C) {
     return abs_min(sdf_line(p, A, B), sdf_line(p, B, C));
 }
 
-// Signed distance to a control polygon
-// Identifies and returns distance to the closest segment.
-float sdf_control_polygon(in vec2 p, in int controlPolySize, out vec2 closest[3]) {
-    // Cycle through segments and track the closest
-    float d = INF;
-    float ds = 0.0;
+// Compute the SDF for a single contour that starts at index `startIdx` and has
+// `count` control points. Returns both the distance and the closest triple in
+// the out-parameters.
+float sdf_single_contour(in vec2 p, int startIdx, int count, out vec2 closest[3]) {
+    float best = INF;
 
-    // First n-2 segments
-    vec2 c = 0.5 * (getControlPoint(0) + getControlPoint(1));
-    vec2 prev = c;
-    for (int i = 1; i < controlPolySize - 1; ++i) {
-        prev = c;
-        c = 0.5 * (getControlPoint(i) + getControlPoint(i+1));
-        ds = sdf_control_segment(p, prev, getControlPoint(i), c);
-        if (abs(ds) < abs(d)) {
-            closest[0] = prev;
-            closest[1] = getControlPoint(i);
-            closest[2] = c;
-            d = ds;
+    // Process all segments including the closing segment
+    for (int j = 0; j < count; ++j) {
+        vec2 curr = getPoint(startIdx + j);
+        vec2 next = getPoint(startIdx + (j + 1) % count);
+        vec2 currMid = 0.5 * (curr + next);
+        
+        // Calculate previous midpoint
+        vec2 prevMid;
+        if (j == 0) {
+            // For first segment, previous midpoint is between last and first point
+            vec2 last = getPoint(startIdx + count - 1);
+            vec2 first = getPoint(startIdx);
+            prevMid = 0.5 * (last + first);
+        } else {
+            // For other segments, use previous point and current point
+            vec2 prevPoint = getPoint(startIdx + j - 1);
+            prevMid = 0.5 * (prevPoint + curr);
+        }
+        
+        float ds = sdf_control_segment(p, prevMid, curr, currMid);
+        if (abs(ds) < abs(best)) {
+            closest[0] = prevMid;
+            closest[1] = curr;
+            closest[2] = currMid;
+            best = ds;
         }
     }
 
-    // Last-but-one segment
-    prev = c;
-    c = 0.5 * (getControlPoint(controlPolySize-1) + getControlPoint(0));
-    ds = sdf_control_segment(p, prev, getControlPoint(controlPolySize-1), c);
-    if (abs(ds) < abs(d)) {
-        closest[0] = prev;
-        closest[1] = getControlPoint(controlPolySize-1);
-        closest[2] = c;
-        d = ds;
-    }
-
-    // Last segment
-    prev = c;
-    c = 0.5 * (getControlPoint(0) + getControlPoint(1));
-    ds = sdf_control_segment(p, prev, getControlPoint(0), c);
-    if (abs(ds) < abs(d)) {
-        closest[0] = prev;
-        closest[1] = getControlPoint(0);
-        closest[2] = c;
-        d = ds;
-    }
-    
-    // Return distance
-    return d;
+    // Refine distance with quadratic Bézier for the closest triple
+    return sdf_bezier(p, closest[0], closest[1], closest[2]);
 }
 
-// Signed distance to a quadratic Bezier shape made from a given control polygon
-float sdf_bezier_shape(in vec2 p, in int controlPolySize) {
-    // Determine closest segment in control polygon
-    vec2 closest[3];
-    sdf_control_polygon(p, controlPolySize, closest);
+// Winding number calculation for a single Bézier segment
+// Returns +1 or -1 for upward/downward crossings, 0 for no crossing
+int windingContribution(in vec2 p, in vec2 A, in vec2 B, in vec2 C) {
+    // For quadratic Bézier, solve for y-intersections with horizontal ray from p
+    float a = A.y - 2.0*B.y + C.y;
+    float b = -2.0*A.y + 2.0*B.y;
+    float c = A.y - p.y;
+    
+    if (abs(a) < 1e-8) {
+        // Linear case: a ≈ 0, solve bt + c = 0
+        if (abs(b) > 1e-8) {
+            float t = -c / b;
+            if (t >= 0.0 && t <= 1.0) {
+                float x = mix(mix(A.x, B.x, t), mix(B.x, C.x, t), t);
+                if (x <= p.x) {
+                    // Check if going up or down by looking at tangent
+                    float dy = mix(B.y, C.y, t) - mix(A.y, B.y, t);
+                    return dy > 0.0 ? 1 : -1;
+                }
+            }
+        }
+        return 0;
+    }
+    
+    // Quadratic case: solve at² + bt + c = 0
+    float discriminant = b*b - 4.0*a*c;
+    if (discriminant < 0.0) return 0;
+    
+    float sqrtD = sqrt(discriminant);
+    vec2 t = (-b + vec2(-sqrtD, sqrtD)) / (2.0*a);
+    
+    int winding = 0;
+    
+    // Check first root
+    if (t.x >= 0.0 && t.x <= 1.0) {
+        float x = mix(mix(A.x, B.x, t.x), mix(B.x, C.x, t.x), t.x);
+        if (x <= p.x) {
+            float dy = mix(B.y, C.y, t.x) - mix(A.y, B.y, t.x);
+            winding += dy > 0.0 ? 1 : -1;
+        }
+    }
+    
+    // Check second root (only if different from first)
+    if (abs(t.y - t.x) > 1e-8 && t.y >= 0.0 && t.y <= 1.0) {
+        float x = mix(mix(A.x, B.x, t.y), mix(B.x, C.x, t.y), t.y);
+        if (x <= p.x) {
+            float dy = mix(B.y, C.y, t.y) - mix(A.y, B.y, t.y);
+            winding += dy > 0.0 ? 1 : -1;
+        }
+    }
+    
+    return winding;
+}
 
-    // Refine by determining actual distance to curve of closest segment
-    return sdf_bezier(p, closest[0], closest[1], closest[2]);
+// ---------------------------------------------------------------------------
+// Winding number based SDF calculation
+// Computes distance to shape using winding numbers (proper hole handling)
+float sdf_bezier_shape_multi(in vec2 p, in int totalPoints) {
+    float minDistance = INF;
+    int windingNumber = 0;
+
+    int i = 0;
+    while (i < totalPoints) {
+        // Skip consecutive separators, if any
+        while (i < totalPoints && isSeparator(i)) { i++; }
+        if (i >= totalPoints) break;
+
+        // Contour starts here
+        int start = i;
+
+        // Find end (index before next separator or EOS)
+        int count = 0;
+        while (i < totalPoints && !isSeparator(i)) { i++; count++; }
+
+        // Process all segments in this contour
+        for (int j = 0; j < count; ++j) {
+            vec2 curr = getPoint(start + j);
+            vec2 next = getPoint(start + (j + 1) % count);
+            vec2 currMid = 0.5 * (curr + next);
+            
+            // Calculate previous midpoint
+            vec2 prevMid;
+            if (j == 0) {
+                vec2 last = getPoint(start + count - 1);
+                vec2 first = getPoint(start);
+                prevMid = 0.5 * (last + first);
+            } else {
+                vec2 prevPoint = getPoint(start + j - 1);
+                prevMid = 0.5 * (prevPoint + curr);
+            }
+            
+            // Distance calculation
+            float d = sdf_bezier(p, prevMid, curr, currMid);
+            minDistance = min(minDistance, abs(d));
+            
+            // Winding number calculation
+            windingNumber += windingContribution(p, prevMid, curr, currMid);
+        }
+    }
+
+    // Apply winding number to determine inside/outside
+    // Use non-zero rule: inside if winding number != 0
+    bool inside = windingNumber != 0;
+    return inside ? -minDistance : minDistance;
+}
+
+// ---------------------------------------------------------------------------
+// Backwards-compat shim (existing calls expect this symbol)
+float sdf_bezier_shape(in vec2 p, in int totalPoints) {
+    return sdf_bezier_shape_multi(p, totalPoints);
 }
 
 void main() {
@@ -234,7 +338,7 @@ void main() {
     
     int numPoints = int(uNumPoints);
     
-    // Distance to shape
+    // Distance to shape using general Bézier approach
     float d = sdf_bezier_shape(p, numPoints);
     
     // Distance field
@@ -245,11 +349,46 @@ void main() {
     // Shape
 	col = mix(col, vec3(1.0), 1.0-smoothstep(0.0,0.015,abs(d)));
     
-    // Always show control polygon (no time dependency)
-    vec2 closest[3];
-    d = sdf_control_polygon(p, numPoints, closest);
-    d = min(d, length(p-closest[1])-0.02);
-    col = mix(col, vec3(1,0,0), 1.0-smoothstep(0.0,0.007,d));
+    // ---------------- Debug overlay: draw control polygon lines -------------
+    float dbg = INF;
+    int iDbg = 0;
+    while (iDbg < numPoints) {
+        while (iDbg < numPoints && isSeparator(iDbg)) iDbg++;
+        if (iDbg >= numPoints) break;
+
+        int start = iDbg;
+        // Determine contour length
+        int cnt = 0;
+        while (iDbg < numPoints && !isSeparator(iDbg)) { iDbg++; cnt++; }
+
+        // Need at least 2 points
+        if (cnt < 2) continue;
+
+        vec2 first = getPoint(start);
+        
+        // Handle all segments including the closing segment
+        for (int k = 0; k < cnt; ++k) {
+            vec2 curr = getPoint(start + k);
+            vec2 next = getPoint(start + (k + 1) % cnt);
+            vec2 midCurr = 0.5 * (curr + next);
+            
+            // For the previous midpoint, use either the previous iteration's midNext
+            // or for the first iteration, use the midpoint between last and first
+            vec2 midPrev;
+            if (k == 0) {
+                vec2 last = getPoint(start + cnt - 1);
+                midPrev = 0.5 * (last + first);
+            } else {
+                vec2 prevPoint = getPoint(start + k - 1);
+                midPrev = 0.5 * (prevPoint + curr);
+            }
+            
+            dbg = abs_min(dbg, sdf_control_segment(p, midPrev, curr, midCurr));
+        }
+    }
+
+    col = mix(col, vec3(1,0,0), 1.0 - smoothstep(0.0, 0.007, dbg));
+    // -------------------------------------------------------------------------
     
     // Output to screen
     fragColor = vec4(col, 1.0);

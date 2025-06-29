@@ -323,18 +323,18 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
   List<Offset> _extractControlPointsFromBezierShape(
       BezierShape bezierShape, Rect rect) {
     try {
-      final scaledControlPoints = <Offset>[];
+      final scaled = <Offset>[];
 
-      // Scale control points to the rect
-      for (final point in bezierShape.controlPoints) {
-        final scaledPoint = Offset(
-          point.dx * rect.width + rect.left,
-          point.dy * rect.height + rect.top,
-        );
-        scaledControlPoints.add(scaledPoint);
+      for (final contour in bezierShape.contours) {
+        for (final point in contour) {
+          scaled.add(Offset(
+            point.dx * rect.width + rect.left,
+            point.dy * rect.height + rect.top,
+          ));
+        }
       }
 
-      return scaledControlPoints;
+      return scaled;
     } catch (e) {
       debugPrint('Error extracting control points from BezierShape: $e');
       return _createFallbackControlPoints(rect);
@@ -362,9 +362,9 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
   }
 
   /// Generate control points for all registered shapes using cached data
-  List<Offset> _collectAllControlPoints(
+  List<List<Offset>> _collectAllContours(
       List<(RenderLiquidGlass, RawShape)> shapes) {
-    final allControlPoints = <Offset>[];
+    final contours = <List<Offset>>[];
     final layerGlobalOffset = localToGlobal(Offset.zero);
 
     for (final (shapeRender, rawShape) in shapes) {
@@ -395,14 +395,16 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
             );
           }).toList();
 
-          allControlPoints.addAll(transformedPoints);
+          // Ensure we treat each shape as its own contour unless the raw shape
+          // already encodes multiple contours (BezierShape update).
+          contours.add(transformedPoints);
         } catch (e) {
           debugPrint('Failed to collect control points for shape: $e');
         }
       }
     }
 
-    return allControlPoints;
+    return contours;
   }
 
   /// Get the combined texture from all bezier shapes
@@ -461,6 +463,71 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
     return completer.future;
   }
 
+  double _signedArea(List<Offset> pts) {
+    double area = 0;
+    for (int i = 0; i < pts.length; i++) {
+      final j = (i + 1) % pts.length;
+      area += pts[i].dx * pts[j].dy - pts[j].dx * pts[i].dy;
+    }
+    return area * 0.5;
+  }
+
+  Future<ui.Image> _encodeContoursToTexture(List<List<Offset>> contours) async {
+    // Flatten with separators
+    final totalPoints =
+        contours.fold<int>(0, (sum, c) => sum + c.length) +
+            (contours.length - 1);
+
+    final width = totalPoints > 0 ? totalPoints : 1;
+    const height = 1;
+    final pixels = Uint8List(width * 4);
+
+    int cursor = 0;
+    for (int ci = 0; ci < contours.length; ci++) {
+      final contour = contours[ci];
+      if (contour.isEmpty) continue;
+
+      final orientSign = _signedArea(contour) >= 0 ? 1 : -1;
+      final alphaFirst = orientSign > 0 ? 32 : 64; // CCW=32, CW=64
+
+      for (int pi = 0; pi < contour.length; pi++) {
+        final pt = contour[pi];
+        final px = cursor * 4;
+
+        final x = pt.dx.clamp(0.0, 4095.0).round();
+        final y = pt.dy.clamp(0.0, 4095.0).round();
+
+        pixels[px] = x & 0xFF;
+        pixels[px + 1] = y & 0xFF;
+        pixels[px + 2] = ((x >> 8) & 0x0F) | (((y >> 8) & 0x0F) << 4);
+        pixels[px + 3] = pi == 0 ? alphaFirst : 255; // meta in alpha
+
+        cursor++;
+      }
+
+      // Separator, except last
+      if (ci < contours.length - 1) {
+        final px = cursor * 4;
+        pixels[px] = 0;
+        pixels[px + 1] = 0;
+        pixels[px + 2] = 0;
+        pixels[px + 3] = 0; // alpha 0 marks separator
+        cursor++;
+      }
+    }
+
+    final completer = Completer<ui.Image>();
+    ui.decodeImageFromPixels(
+      pixels,
+      width,
+      height,
+      ui.PixelFormat.rgba8888,
+      completer.complete,
+    );
+
+    return completer.future;
+  }
+
   @override
   void paint(PaintingContext context, Offset offset) {
     final shapes = collectShapes();
@@ -480,8 +547,11 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
     }
 
     // Try to use morphable shapes first, fallback to basic shapes if needed
-    final controlPoints = _collectAllControlPoints(shapes);
-    final hasValidControlPoints = controlPoints.length >= 3;
+    final contours = _collectAllContours(shapes);
+    final encodedPointCount = contours.isEmpty
+        ? 0
+        : contours.fold<int>(0, (s, c) => s + c.length) + contours.length - 1;
+    final hasValidControlPoints = encodedPointCount >= 3;
 
     if (!hasValidControlPoints) {
       // Fallback to the original simple shape rendering
@@ -514,11 +584,12 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
 
       // Fallback: Update control points texture if needed and no cached texture available
       if (cachedTexture == null &&
-          !_listsEqual(_lastControlPoints, controlPoints)) {
-        _lastControlPoints = List.from(controlPoints);
+          !_listsEqual(_lastControlPoints,
+              contours.expand((c) => c).toList())) {
+        _lastControlPoints = List.from(contours.expand((c) => c));
 
         // Create control points texture if needed (async, non-blocking)
-        _createControlPointsTexture(controlPoints).then((texture) {
+        _encodeContoursToTexture(contours).then((texture) {
           _controlPointsTexture = texture;
           markNeedsPaint(); // Repaint when texture is ready
         }).catchError((e) {
@@ -541,7 +612,7 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
           ..setFloat(9, _settings.ambientStrength) // uAmbientStrength
           ..setFloat(10, _settings.thickness) // uThickness
           ..setFloat(11, 1.51) // uRefractiveIndex
-          ..setFloat(12, controlPoints.length.toDouble()); // uNumPoints
+          ..setFloat(12, encodedPointCount.toDouble()); // uNumPoints
 
         // Set control points texture to sampler 1 (sampler 0 is auto-provided by BackdropFilterLayer)
         // Prefer cached texture over fallback texture

@@ -32,8 +32,8 @@ class ShaderScreen extends StatefulWidget {
 }
 
 class _ShaderScreenState extends State<ShaderScreen> {
-  // Constants
-  static const int cubicSubdivisionSegments = 3;
+  // Constants - adaptive subdivision based on shape complexity
+  static const int baseCubicSubdivisionSegments = 2; // Reduced for small shapes
   static const Rect shapeRect = Rect.fromLTWH(0, 0, 400, 300);
 
   ui.FragmentShader? shader;
@@ -44,6 +44,10 @@ class _ShaderScreenState extends State<ShaderScreen> {
     'Star',
     'Heart',
     'Morphable Shape',
+    'Donut',
+    'Gear',
+    'Figure 8',
+    'Clover',
   ];
 
   String selectedShape = 'Circle';
@@ -62,8 +66,9 @@ class _ShaderScreenState extends State<ShaderScreen> {
 
   Future<void> _loadShader() async {
     try {
-      final program =
-          await ui.FragmentProgram.fromAsset('assets/shaders/sdf.frag');
+      final program = await ui.FragmentProgram.fromAsset(
+        'assets/shaders/sdf.frag',
+      );
       setState(() {
         shader = program.fragmentShader();
       });
@@ -127,7 +132,8 @@ class _ShaderScreenState extends State<ShaderScreen> {
   }
 
   List<Offset> _extractControlPointsFromOutlinedShapeBorder(
-      OutlinedShapeBorder shapeBorder) {
+    OutlinedShapeBorder shapeBorder,
+  ) {
     try {
       final dynamicPath = shapeBorder.generateInnerDynamicPath(shapeRect);
       return _extractControlPointsFromDynamicPath(dynamicPath);
@@ -155,7 +161,9 @@ class _ShaderScreenState extends State<ShaderScreen> {
   }
 
   List<Offset> _processPathSegment(
-      List<Offset> pathSegment, bool isFirstSegment) {
+    List<Offset> pathSegment,
+    bool isFirstSegment,
+  ) {
     final points = <Offset>[];
 
     if (pathSegment.length == 4) {
@@ -170,8 +178,10 @@ class _ShaderScreenState extends State<ShaderScreen> {
       points.addAll(subdivided.skip(startIndex).map(_normalizePoint));
     } else if (pathSegment.length == 2) {
       // Linear segment - convert to quadratic
-      final quadraticPoints =
-          _convertLinearToQuadratic(pathSegment[0], pathSegment[1]);
+      final quadraticPoints = _convertLinearToQuadratic(
+        pathSegment[0],
+        pathSegment[1],
+      );
       final startIndex = isFirstSegment ? 0 : 1;
       points.addAll(quadraticPoints.skip(startIndex).map(_normalizePoint));
     }
@@ -180,17 +190,26 @@ class _ShaderScreenState extends State<ShaderScreen> {
   }
 
   List<Offset> _subdivideCubicBezier(
-      Offset p0, Offset p1, Offset p2, Offset p3) {
+    Offset p0,
+    Offset p1,
+    Offset p2,
+    Offset p3,
+  ) {
     final points = <Offset>[];
-    for (int i = 0; i <= cubicSubdivisionSegments; i++) {
-      final t = i / cubicSubdivisionSegments;
+    for (int i = 0; i <= baseCubicSubdivisionSegments; i++) {
+      final t = i / baseCubicSubdivisionSegments;
       points.add(_cubicBezierPoint(p0, p1, p2, p3, t));
     }
     return points;
   }
 
   Offset _cubicBezierPoint(
-      Offset p0, Offset p1, Offset p2, Offset p3, double t) {
+    Offset p0,
+    Offset p1,
+    Offset p2,
+    Offset p3,
+    double t,
+  ) {
     final u = 1 - t;
     final tt = t * t;
     final uu = u * u;
@@ -235,23 +254,87 @@ class _ShaderScreenState extends State<ShaderScreen> {
     return points;
   }
 
-  Future<ui.Image> _createControlPointsTexture(List<Offset> points) async {
-    final width = points.length;
+  // ‑-- NEW: generate a list of closed contours so we can handle multiple paths (e.g. glyphs)
+  List<List<Offset>> _generateContoursFromShape() {
+    switch (selectedShape) {
+      case 'Donut':
+        return _generateDonutContours();
+      case 'Gear':
+        return [_generateGearContour()];
+      case 'Figure 8':
+        return _generateFigure8Contours();
+      case 'Clover':
+        return _generateCloverContours();
+      default:
+        break;
+    }
+    // Default: single contour
+    return [_generateControlPointsFromShape()];
+  }
+
+  // ‑-- NEW: signed area to determine contour orientation (CCW > 0, CW < 0)
+  double _signedArea(List<Offset> pts) {
+    double area = 0;
+    for (int i = 0; i < pts.length; i++) {
+      final j = (i + 1) % pts.length;
+      area += pts[i].dx * pts[j].dy - pts[j].dx * pts[i].dy;
+    }
+    return area * 0.5;
+  }
+
+  // ‑-- NEW: build a 1-pixel-high texture that contains all contours, inserting a
+  // separator pixel (blue = 1.0) between them and encoding the orientation in the
+  // first pixel of every contour (blue = 0.25 for CCW, 0.75 for CW).
+  Future<ui.Image> _createControlPointsTextureFromContours(
+    List<List<Offset>> contours,
+  ) async {
+    final totalPoints =
+        contours.fold<int>(0, (sum, c) => sum + c.length) +
+        (contours.length - 1); // + separators
+
+    final width = totalPoints;
     const height = 1;
-    final pixels = Uint8List(width * height * 4);
+    final pixels = Uint8List(width * 4);
 
-    for (int i = 0; i < points.length; i++) {
-      final point = points[i];
-      final pixelIndex = i * 4;
+    int pixelCursor = 0;
 
-      // Convert from [-1, 1] to [0, 1] texture space
-      final x = (point.dx + 1.0) * 0.5;
-      final y = (point.dy + 1.0) * 0.5;
+    for (int ci = 0; ci < contours.length; ci++) {
+      final contour = contours[ci];
 
-      pixels[pixelIndex] = (x * 255).round().clamp(0, 255); // Red = X
-      pixels[pixelIndex + 1] = (y * 255).round().clamp(0, 255); // Green = Y
-      pixels[pixelIndex + 2] = 0; // Blue = unused
-      pixels[pixelIndex + 3] = 255; // Alpha = 1.0
+      // Detect orientation automatically
+      final orientationSign = _signedArea(contour) >= 0 ? 1 : -1; // CCW ➜ +1
+
+      final double orientationEncoded = orientationSign > 0
+          ? 0.25
+          : 0.75; // encode into blue channel
+
+      for (int pi = 0; pi < contour.length; pi++) {
+        final point = contour[pi];
+        final pxIdx = pixelCursor * 4;
+
+        // Normalise from [-1,1] to [0,1]
+        final x = (point.dx + 1.0) * 0.5;
+        final y = (point.dy + 1.0) * 0.5;
+
+        pixels[pxIdx] = (x * 255).round().clamp(0, 255);
+        pixels[pxIdx + 1] = (y * 255).round().clamp(0, 255);
+        pixels[pxIdx + 2] = pi == 0
+            ? (orientationEncoded * 255).round()
+            : 0; // orientation only on first point
+        pixels[pxIdx + 3] = 255; // alpha
+
+        pixelCursor++;
+      }
+
+      // Insert separator (except after last contour)
+      if (ci < contours.length - 1) {
+        final pxIdx = pixelCursor * 4;
+        pixels[pxIdx] = 0;
+        pixels[pxIdx + 1] = 0;
+        pixels[pxIdx + 2] = 255; // blue = 1.0 ➜ separator
+        pixels[pxIdx + 3] = 255;
+        pixelCursor++;
+      }
     }
 
     final completer = Completer<ui.Image>();
@@ -268,7 +351,11 @@ class _ShaderScreenState extends State<ShaderScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final controlPoints = _generateControlPointsFromShape();
+    final contours = _generateContoursFromShape();
+    // Flattened length including separators for uniform uNumPoints.
+    final totalEncodedPoints =
+        contours.fold<int>(0, (sum, c) => sum + c.length) +
+        (contours.length - 1);
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -282,8 +369,8 @@ class _ShaderScreenState extends State<ShaderScreen> {
           : Column(
               children: [
                 _ShapeSelector(),
-                Expanded(child: _ShaderView(controlPoints)),
-                _InfoPanel(controlPoints),
+                Expanded(child: _ShaderView(contours, totalEncodedPoints)),
+                _InfoPanel(totalEncodedPoints),
               ],
             ),
     );
@@ -315,8 +402,9 @@ class _ShaderScreenState extends State<ShaderScreen> {
                 },
                 selectedColor: Colors.blue,
                 labelStyle: TextStyle(
-                  color:
-                      selectedShape == name ? Colors.white : Colors.grey[300],
+                  color: selectedShape == name
+                      ? Colors.white
+                      : Colors.grey[300],
                 ),
               );
             }).toList(),
@@ -326,16 +414,16 @@ class _ShaderScreenState extends State<ShaderScreen> {
     );
   }
 
-  Widget _ShaderView(List<Offset> controlPoints) {
+  Widget _ShaderView(List<List<Offset>> contours, int encodedPointCount) {
     return FutureBuilder<ui.Image>(
-      future: _createControlPointsTexture(controlPoints),
+      future: _createControlPointsTextureFromContours(contours),
       builder: (context, snapshot) {
         if (snapshot.hasData) {
           return CustomPaint(
             painter: ShaderPainter(
               shader: shader!,
               controlPointsTexture: snapshot.data!,
-              numPoints: controlPoints.length,
+              numPoints: encodedPointCount,
             ),
             size: Size.infinite,
           );
@@ -346,7 +434,7 @@ class _ShaderScreenState extends State<ShaderScreen> {
     );
   }
 
-  Widget _InfoPanel(List<Offset> controlPoints) {
+  Widget _InfoPanel(int encodedPointCount) {
     return Container(
       padding: const EdgeInsets.all(16),
       color: Colors.black87,
@@ -368,7 +456,7 @@ class _ShaderScreenState extends State<ShaderScreen> {
           ),
           const SizedBox(height: 12),
           Text(
-            'Total Points: ${controlPoints.length}',
+            'Encoded Points (incl. separators): $encodedPointCount',
             style: const TextStyle(
               color: Colors.white60,
               fontSize: 12,
@@ -378,6 +466,114 @@ class _ShaderScreenState extends State<ShaderScreen> {
         ],
       ),
     );
+  }
+
+  // --- DONUT helper ---------------------------------------------------------
+  List<List<Offset>> _generateDonutContours() {
+    // Use more points for better Bézier approximation
+    const int outerPoints = 20;
+    const int innerPoints = 16;
+
+    final outer = _createCircularContour(0.6, 0.6, outerPoints, ccw: true);
+    final inner = _createCircularContour(0.4, 0.4, innerPoints, ccw: false);
+
+    return [outer, inner];
+  }
+
+  List<Offset> _createCircularContour(
+    double radiusX,
+    double radiusY,
+    int numPoints, {
+    bool ccw = true,
+    Offset center = Offset.zero,
+  }) {
+    final points = <Offset>[];
+    for (int i = 0; i < numPoints; i++) {
+      final t = i / numPoints;
+      final angle = t * 2 * math.pi;
+      // For clockwise, negate the angle
+      final actualAngle = ccw ? angle : -angle;
+      final x = center.dx + math.cos(actualAngle) * radiusX;
+      final y = center.dy + math.sin(actualAngle) * radiusY;
+      points.add(Offset(x, y));
+    }
+    return points;
+  }
+
+  // Gear: create a single contour with alternating radii (teeth)
+  List<Offset> _generateGearContour({
+    int teeth = 20,
+    double innerRadius = 0.55,
+    double outerRadius = 0.7,
+  }) {
+    final pts = <Offset>[];
+    final toothStep = 2 * math.pi / teeth;
+    for (int i = 0; i < teeth; i++) {
+      final angleBase = i * toothStep;
+      // Outer vertex
+      pts.add(
+        Offset(
+          math.cos(angleBase) * outerRadius,
+          math.sin(angleBase) * outerRadius,
+        ),
+      );
+      // Inner vertex halfway to next tooth
+      final angleInner = angleBase + toothStep / 2;
+      pts.add(
+        Offset(
+          math.cos(angleInner) * innerRadius,
+          math.sin(angleInner) * innerRadius,
+        ),
+      );
+    }
+    return pts;
+  }
+
+  // Figure 8: two separate circles side-by-side
+  List<List<Offset>> _generateFigure8Contours() {
+    const int ptsPer = 40;
+    final left = _createCircularContour(
+      0.4,
+      0.4,
+      ptsPer,
+      center: const Offset(-0.5, 0),
+      ccw: true,
+    );
+    final right = _createCircularContour(
+      0.4,
+      0.4,
+      ptsPer,
+      center: const Offset(0.5, 0),
+      ccw: true,
+    );
+    return [left, right];
+  }
+
+  // Clover: three small circles arranged in tri-foil pattern
+  List<List<Offset>> _generateCloverContours() {
+    const int ptsPer = 30;
+    final top = _createCircularContour(
+      0.35,
+      0.35,
+      ptsPer,
+      center: const Offset(0, 0.5),
+      ccw: true,
+    );
+    final left = _createCircularContour(
+      0.35,
+      0.35,
+      ptsPer,
+      center: const Offset(-0.45, -0.2),
+      ccw: true,
+    );
+    final right = _createCircularContour(
+      0.35,
+      0.35,
+      ptsPer,
+      center: const Offset(0.45, -0.2),
+      ccw: true,
+    );
+    return [top, left, right];
   }
 }
 
@@ -391,10 +587,7 @@ class _LoadingWidget extends StatelessWidget {
       children: [
         CircularProgressIndicator(),
         SizedBox(height: 16),
-        Text(
-          'Loading shader...',
-          style: TextStyle(color: Colors.white),
-        ),
+        Text('Loading shader...', style: TextStyle(color: Colors.white)),
       ],
     );
   }

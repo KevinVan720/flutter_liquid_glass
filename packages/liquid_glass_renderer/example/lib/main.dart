@@ -37,13 +37,26 @@ BezierShape morphableShapeToBezierShape(MorphableShapeBorder shapeBorder) {
     // Use a normalized rect to extract control points
     const rect = Rect.fromLTWH(0, 0, 1, 1);
     final dynamicPath = shapeBorder.generateInnerDynamicPath(rect);
-    final controlPoints = _extractControlPointsFromDynamicPath(dynamicPath);
+    final outer = _extractControlPointsFromDynamicPath(dynamicPath);
 
-    return BezierShape(controlPoints: controlPoints);
+    // Build inner contour: same points scaled about center (0.5,0.5) by 0.5
+    const center = Offset(0.5, 0.5);
+    final inner = outer
+        .map(
+          (p) => Offset(
+            center.dx + (p.dx - center.dx) * 0.5,
+            center.dy + (p.dy - center.dy) * 0.5,
+          ),
+        )
+        .toList()
+        .reversed // reverse orientation to mark as hole
+        .toList();
+
+    return BezierShape(contours: [outer, inner]);
   } catch (e) {
     debugPrint('Error converting MorphableShape to BezierShape: $e');
     // Fallback to a simple circle
-    return BezierShape(controlPoints: _createFallbackControlPoints());
+    return BezierShape(contours: [_createFallbackControlPoints()]);
   }
 }
 
@@ -171,20 +184,19 @@ List<Offset> _createFallbackControlPoints() {
 
 /// Interpolate between two BezierShapes
 BezierShape lerpBezierShapes(BezierShape a, BezierShape b, double t) {
-  final maxLength = max(a.controlPoints.length, b.controlPoints.length);
+  final flatA = a.contours.expand((c) => c).toList();
+  final flatB = b.contours.expand((c) => c).toList();
+
+  final maxLength = max(flatA.length, flatB.length);
   final result = <Offset>[];
 
   for (int i = 0; i < maxLength; i++) {
-    final pointA = i < a.controlPoints.length
-        ? a.controlPoints[i]
-        : a.controlPoints.last;
-    final pointB = i < b.controlPoints.length
-        ? b.controlPoints[i]
-        : b.controlPoints.last;
+    final pointA = i < flatA.length ? flatA[i] : flatA.last;
+    final pointB = i < flatB.length ? flatB[i] : flatB.last;
     result.add(Offset.lerp(pointA, pointB, t)!);
   }
 
-  return BezierShape(controlPoints: result);
+  return BezierShape(contours: [result]);
 }
 
 class MainApp extends HookWidget {
@@ -246,9 +258,10 @@ class MainApp extends HookWidget {
 
     final endShape = CircleShapeBorder();
 
-     final shapeTweenController = useAnimationController(
-      duration:
-          const Duration(seconds: 5), // Double the duration for full cycle
+    final shapeTweenController = useAnimationController(
+      duration: const Duration(
+        seconds: 5,
+      ), // Double the duration for full cycle
       lowerBound: 0,
       upperBound: 1,
     )..repeat();
@@ -262,7 +275,8 @@ class MainApp extends HookWidget {
 
     // Create back-and-forth motion: 0->1->0 within one full cycle
     final shapeTweenValue = shapeTweenRaw <= 0.5
-        ? shapeTweenRaw * 2 // 0 to 0.5 becomes 0 to 1
+        ? shapeTweenRaw *
+              2 // 0 to 0.5 becomes 0 to 1
         : (1 - shapeTweenRaw) * 2; // 0.5 to 1 becomes 1 to 0
 
     final shapeTween = MorphableShapeBorderTween(
@@ -314,7 +328,9 @@ class MainApp extends HookWidget {
                           lightAngle: lightAngle,
                           blend: blend,
                         ),
-                        shape: morphableShapeToBezierShape(shapeTween.lerp(shapeTweenValue)!),
+                        shape: morphableShapeToBezierShape(
+                          shapeTween.lerp(shapeTweenValue)!,
+                        ),
                         child: SizedBox(width: 300, height: 300),
                       ),
                     ),

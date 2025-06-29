@@ -157,21 +157,24 @@ class LiquidRoundedRectangle extends LiquidShape {
 /// The points should be normalized (0.0 to 1.0) and will be scaled to fit
 /// within the widget bounds.
 class BezierShape extends LiquidShape {
-  /// Creates a new [BezierShape] with the given control points.
+  /// Creates a [BezierShape]. You can pass either a flat list of control points
+  /// (legacy API) or the new, recommended `contours` parameter which allows
+  /// multiple closed paths.
   ///
-  /// The [controlPoints] should contain points in groups of 3, where each group
-  /// represents a quadratic bezier curve: [start, control, end].
-  /// Points should be normalized between 0.0 and 1.0.
-  const BezierShape({
-    required this.controlPoints,
+  /// Each contour is a list of points that form quadratic Bézier curves in
+  /// groups of three: `[start, control, end, start2, control2, end2, ...]`.
+  /// All points must be normalised to the unit square.
+  BezierShape({
+    List<Offset>? controlPoints,
+    List<List<Offset>>? contours,
     super.side = BorderSide.none,
-  });
+  })  : assert(controlPoints != null || contours != null,
+            'Either controlPoints or contours must be provided'),
+        // Wrap legacy flat list into a single-contour list for internal use.
+        contours = contours ?? [controlPoints!];
 
-  /// The list of control points forming quadratic bezier curves.
-  ///
-  /// Every 3 consecutive points form a quadratic bezier curve.
-  /// Points should be normalized (0.0 to 1.0).
-  final List<Offset> controlPoints;
+  /// All contours that make up this shape. Immutable after construction.
+  final List<List<Offset>> contours;
 
   @override
   OutlinedBorder get _equivalentOutlinedBorder => const OvalBorder();
@@ -189,52 +192,35 @@ class BezierShape extends LiquidShape {
   Path _createBezierPath(Rect rect) {
     final path = Path();
 
-    if (controlPoints.isEmpty) {
-      return path;
-    }
+    if (contours.isEmpty) return path;
 
-    // Ensure we have at least 3 points for a quadratic bezier curve
-    if (controlPoints.length < 3) {
-      return path;
-    }
-
-    // Scale the points to fit within the rect
     final scaleX = rect.width;
     final scaleY = rect.height;
     final offsetX = rect.left;
     final offsetY = rect.top;
 
-    // Move to the starting point (first control point, scaled to rect)
-    final scaledStartPoint = Offset(
-      offsetX + controlPoints[0].dx * scaleX,
-      offsetY + controlPoints[0].dy * scaleY,
-    );
-    path.moveTo(scaledStartPoint.dx, scaledStartPoint.dy);
+    for (final contour in contours) {
+      if (contour.length < 3) continue;
 
-    // Process control points in groups of 3 (start, control, end)
-    // Skip the first point since we already moved to it
-    for (int i = 1; i < controlPoints.length - 1; i += 2) {
-      // Check if we have enough points for a complete bezier curve
-      if (i + 1 >= controlPoints.length) break;
+      // Move to first point of contour
+      final start = contour.first;
+      path.moveTo(offsetX + start.dx * scaleX, offsetY + start.dy * scaleY);
 
-      final controlPoint = Offset(
-        offsetX + controlPoints[i].dx * scaleX,
-        offsetY + controlPoints[i].dy * scaleY,
-      );
-      final endPoint = Offset(
-        offsetX + controlPoints[i + 1].dx * scaleX,
-        offsetY + controlPoints[i + 1].dy * scaleY,
-      );
+      // iterate groups (skip first)
+      for (int i = 1; i < contour.length - 1; i += 2) {
+        if (i + 1 >= contour.length) break;
+        final control = contour[i];
+        final end = contour[i + 1];
+        path.quadraticBezierTo(
+          offsetX + control.dx * scaleX,
+          offsetY + control.dy * scaleY,
+          offsetX + end.dx * scaleX,
+          offsetY + end.dy * scaleY,
+        );
+      }
 
-      path.quadraticBezierTo(
-        controlPoint.dx,
-        controlPoint.dy,
-        endPoint.dx,
-        endPoint.dy,
-      );
+      path.close();
     }
-
-    path.close();
 
     return path;
   }
@@ -256,19 +242,23 @@ class BezierShape extends LiquidShape {
   @override
   BezierShape copyWith({
     BorderSide? side,
-    List<Offset>? controlPoints,
-    bool? closePath,
+    List<List<Offset>>? contours,
+    List<Offset>? controlPoints, // legacy
   }) {
     return BezierShape(
       side: side ?? this.side,
-      controlPoints: controlPoints ?? this.controlPoints,
+      contours: contours ?? this.contours,
+      controlPoints: controlPoints,
     );
   }
 
   @override
   ShapeBorder scale(double t) {
+    final scaled = contours
+        .map((c) => c.map((p) => p * t).toList())
+        .toList(growable: false);
     return BezierShape(
-      controlPoints: controlPoints.map((point) => point * t).toList(),
+      contours: scaled,
       side: side.scale(t),
     );
   }
@@ -276,6 +266,6 @@ class BezierShape extends LiquidShape {
   @override
   List<Object?> get props => [
         ...super.props,
-        controlPoints,
+        contours,
       ];
 }
