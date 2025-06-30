@@ -11,10 +11,7 @@ void main() {
   runApp(const ShaderApp());
 }
 
-// Constants - adaptive subdivision based on shape complexity
-const int baseCubicSubdivisionSegments = 2; // Reduced for small shapes
-const int baseQuadraticSubdivisionSegments =
-    3; // for quadratic Bézier subdivision
+// Shape bounding rectangle for normalization
 const Rect shapeRect = Rect.fromLTWH(0, 0, 400, 300);
 
 List<Offset> _processPathSegment(
@@ -24,24 +21,23 @@ List<Offset> _processPathSegment(
   final points = <Offset>[];
 
   if (pathSegment.length == 4) {
-    // Cubic Bézier curve
-    final subdivided = _subdivideCubicBezier(
+    // Cubic Bézier curve - convert to quadratic segments
+    final quadraticSegments = _convertCubicToQuadratic(
       pathSegment[0],
       pathSegment[1],
       pathSegment[2],
       pathSegment[3],
     );
-    final startIndex = isFirstSegment ? 0 : 1;
-    points.addAll(subdivided.skip(startIndex).map(_normalizePoint));
+
+    for (int i = 0; i < quadraticSegments.length; i++) {
+      final segment = quadraticSegments[i];
+      final skipStart = (isFirstSegment && i == 0) ? 0 : 1;
+      points.addAll(segment.skip(skipStart).map(_normalizePoint));
+    }
   } else if (pathSegment.length == 3) {
-    // Quadratic Bézier curve
-    final subdivided = _subdivideQuadraticBezier(
-      pathSegment[0],
-      pathSegment[1],
-      pathSegment[2],
-    );
+    // Quadratic Bézier curve - pass control points directly
     final startIndex = isFirstSegment ? 0 : 1;
-    points.addAll(subdivided.skip(startIndex).map(_normalizePoint));
+    points.addAll(pathSegment.skip(startIndex).map(_normalizePoint));
   } else if (pathSegment.length == 2) {
     // Linear segment - convert to quadratic
     final quadraticPoints = _convertLinearToQuadratic(
@@ -55,46 +51,68 @@ List<Offset> _processPathSegment(
   return points;
 }
 
-List<Offset> _subdivideCubicBezier(Offset p0, Offset p1, Offset p2, Offset p3) {
-  final points = <Offset>[];
-  for (int i = 0; i <= baseCubicSubdivisionSegments; i++) {
-    final t = i / baseCubicSubdivisionSegments;
-    points.add(_cubicBezierPoint(p0, p1, p2, p3, t));
-  }
-  return points;
+// Convert a cubic Bézier curve to quadratic segments
+// Using the standard approach of approximating with multiple quadratic curves
+List<List<Offset>> _convertCubicToQuadratic(
+  Offset p0,
+  Offset p1,
+  Offset p2,
+  Offset p3,
+) {
+  // For simplicity, we'll split the cubic into 2 quadratic segments
+  // This provides a good balance between accuracy and performance
+
+  // Split cubic at t=0.5
+  final mid = _subdivideCubicAt(p0, p1, p2, p3, 0.5);
+
+  // Convert each half to quadratic
+  final quad1 = _cubicToQuadraticApprox(mid[0], mid[1], mid[2], mid[3]);
+  final quad2 = _cubicToQuadraticApprox(mid[3], mid[4], mid[5], mid[6]);
+
+  return [quad1, quad2];
 }
 
-Offset _cubicBezierPoint(Offset p0, Offset p1, Offset p2, Offset p3, double t) {
-  final u = 1 - t;
-  final tt = t * t;
-  final uu = u * u;
-  final uuu = uu * u;
-  final ttt = tt * t;
+// Subdivide cubic Bézier at parameter t
+List<Offset> _subdivideCubicAt(
+  Offset p0,
+  Offset p1,
+  Offset p2,
+  Offset p3,
+  double t,
+) {
+  // De Casteljau's algorithm
+  final q0 = _lerp(p0, p1, t);
+  final q1 = _lerp(p1, p2, t);
+  final q2 = _lerp(p2, p3, t);
 
-  return Offset(
-    uuu * p0.dx + 3 * uu * t * p1.dx + 3 * u * tt * p2.dx + ttt * p3.dx,
-    uuu * p0.dy + 3 * uu * t * p1.dy + 3 * u * tt * p2.dy + ttt * p3.dy,
+  final r0 = _lerp(q0, q1, t);
+  final r1 = _lerp(q1, q2, t);
+
+  final s = _lerp(r0, r1, t);
+
+  return [p0, q0, r0, s, r1, q2, p3];
+}
+
+// Linear interpolation between two points
+Offset _lerp(Offset a, Offset b, double t) {
+  return Offset(a.dx + (b.dx - a.dx) * t, a.dy + (b.dy - a.dy) * t);
+}
+
+// Approximate a cubic Bézier with a quadratic Bézier
+List<Offset> _cubicToQuadraticApprox(
+  Offset p0,
+  Offset p1,
+  Offset p2,
+  Offset p3,
+) {
+  // Use the midpoint approximation method
+  // The control point is chosen to minimize the maximum error
+  final controlPoint = Offset(
+    (3 * p1.dx + 3 * p2.dx - p0.dx - p3.dx) / 4,
+    (3 * p1.dy + 3 * p2.dy - p0.dy - p3.dy) / 4,
   );
-}
 
-List<Offset> _subdivideQuadraticBezier(Offset p0, Offset p1, Offset p2) {
-  final points = <Offset>[];
-  for (int i = 0; i <= baseQuadraticSubdivisionSegments; i++) {
-    final t = i / baseQuadraticSubdivisionSegments;
-    points.add(_quadraticBezierPoint(p0, p1, p2, t));
-  }
-  return points;
-}
-
-Offset _quadraticBezierPoint(Offset p0, Offset p1, Offset p2, double t) {
-  final u = 1 - t;
-  final tt = t * t;
-  final uu = u * u;
-
-  return Offset(
-    uu * p0.dx + 2 * u * t * p1.dx + tt * p2.dx,
-    uu * p0.dy + 2 * u * t * p1.dy + tt * p2.dy,
-  );
+  return [p0, controlPoint, p3];
 }
 
 List<Offset> _convertLinearToQuadratic(Offset startPoint, Offset endPoint) {
@@ -283,6 +301,10 @@ class _ShaderScreenState extends State<ShaderScreen> {
         final processedPoints = _processPathSegment(pathSegment, i == 0);
         controlPoints.addAll(processedPoints);
       }
+
+      // For connected curves, we need an odd number of points: 2*n + 1
+      // where n is the number of curves
+      // If we don't have the right format, we might need to adjust
     } catch (e) {
       debugPrint('Error processing DynamicPath: $e');
       return _createFallbackControlPoints();
@@ -292,17 +314,30 @@ class _ShaderScreenState extends State<ShaderScreen> {
   }
 
   List<Offset> _createFallbackControlPoints() {
-    // Create a simple rounded rectangle as fallback
+    // Create a simple circle using connected quadratic Bézier curves
     final points = <Offset>[];
-    const numPoints = 12;
 
-    for (int i = 0; i < numPoints; i++) {
-      final t = i / numPoints;
-      final angle = t * 2 * math.pi;
-      final x = math.cos(angle) * 0.6;
-      final y = math.sin(angle) * 0.4;
-      points.add(Offset(x, y));
-    }
+    // Create a circle using 4 connected quadratic Bézier curves (8 points total)
+    // Format: P0(start), P1(control), P2(end), P3(control), P4(end), P5(control), P6(end), P7(control)
+    // Last curve closes from P6 back to P0 using P7 as control
+    const double radius = 0.6;
+    final double controlDistance = radius * 4.0 / 3.0 * math.tan(math.pi / 8);
+
+    // Connected quadratic curves for a circle
+    points.addAll([
+      // First curve: right -> top (P0 -> P1 -> P2)
+      Offset(radius, 0), // P0: start point
+      Offset(radius, -controlDistance), // P1: control point
+      Offset(0, -radius), // P2: end point (shared with next curve)
+      // Second curve: top -> left (P2 -> P3 -> P4)
+      Offset(-controlDistance, -radius), // P3: control point
+      Offset(-radius, 0), // P4: end point (shared with next curve)
+      // Third curve: left -> bottom (P4 -> P5 -> P6)
+      Offset(-radius, controlDistance), // P5: control point
+      Offset(0, radius), // P6: end point (shared with next curve)
+      // Fourth curve: bottom -> right (P6 -> P7 -> P0, closes the loop)
+      Offset(controlDistance, radius), // P7: control point
+    ]);
 
     return points;
   }
@@ -750,6 +785,95 @@ class ShaderPainter extends CustomPainter {
   }
 }
 
+// Process path segments for character contours in connected quadratic format
+List<Offset> _processCharacterPathSegment(
+  List<Offset> pathSegment,
+  bool isFirstSegment,
+) {
+  final points = <Offset>[];
+
+  if (pathSegment.length == 4) {
+    // Cubic Bézier curve - convert to quadratic segments
+    final quadraticSegments = _convertCubicToQuadratic(
+      pathSegment[0],
+      pathSegment[1],
+      pathSegment[2],
+      pathSegment[3],
+    );
+
+    for (int i = 0; i < quadraticSegments.length; i++) {
+      final segment = quadraticSegments[i];
+      if (isFirstSegment && i == 0) {
+        // For the very first segment, add all 3 points
+        points.addAll(segment.map(_normalizePoint));
+      } else {
+        // For other segments, skip the start point (it's shared)
+        points.addAll(segment.skip(1).map(_normalizePoint));
+      }
+    }
+  } else if (pathSegment.length == 3) {
+    // Quadratic Bézier curve - use directly
+    if (isFirstSegment) {
+      // For the first segment, add all 3 points
+      points.addAll(pathSegment.map(_normalizePoint));
+    } else {
+      // For other segments, skip the start point (it's shared)
+      points.addAll(pathSegment.skip(1).map(_normalizePoint));
+    }
+  } else if (pathSegment.length == 2) {
+    // Linear segment - convert to quadratic
+    final quadraticPoints = _convertLinearToQuadratic(
+      pathSegment[0],
+      pathSegment[1],
+    );
+    if (isFirstSegment) {
+      // For the first segment, add all 3 points
+      points.addAll(quadraticPoints.map(_normalizePoint));
+    } else {
+      // For other segments, skip the start point (it's shared)
+      points.addAll(quadraticPoints.skip(1).map(_normalizePoint));
+    }
+  }
+
+  return points;
+}
+
+// Ensure contour follows connected quadratic format with even number of points
+List<Offset> _ensureConnectedFormat(List<Offset> contour) {
+  if (contour.isEmpty) return contour;
+
+  // The contour should already be in connected format from _processCharacterPathSegment
+  // But let's ensure it's properly closed and has even number of points
+
+  List<Offset> result = List.from(contour);
+
+  // Check if the last point is close to the first point (indicating a closed path)
+  if (result.length >= 3) {
+    final first = result.first;
+    final last = result.last;
+    final distance = (last - first).distance;
+
+    // If they're very close, remove the duplicate
+    if (distance < 0.01) {
+      result.removeLast();
+    }
+  }
+
+  // For connected quadratic curves, we need an even number of points
+  // If we have odd number, add a control point
+  if (result.length % 2 == 1 && result.length >= 3) {
+    // Add a control point between the last and first point
+    final lastPoint = result.last;
+    final firstPoint = result.first;
+    final controlPoint = Offset(
+      (lastPoint.dx + firstPoint.dx) * 0.5,
+      (lastPoint.dy + firstPoint.dy) * 0.5,
+    );
+    result.add(controlPoint);
+  }
+  return result;
+}
+
 extension PMFontExtension on PMFont {
   /// Converts a character into a Flutter [Path] you can
   /// directly draw on a [Canvas]
@@ -855,7 +979,9 @@ extension PMFontExtension on PMFont {
             double.parse(coords[0]),
             double.parse(coords[1]),
           );
-          contour.addAll(_processPathSegment([startPoint, p1], isFirstSegment));
+          contour.addAll(
+            _processCharacterPathSegment([startPoint, p1], isFirstSegment),
+          );
           isFirstSegment = false;
           startPoint = p1;
         } else if (type == 'Q') {
@@ -868,7 +994,7 @@ extension PMFontExtension on PMFont {
             double.parse(coords[3]),
           );
           contour.addAll(
-            _processPathSegment([startPoint, p1, p2], isFirstSegment),
+            _processCharacterPathSegment([startPoint, p1, p2], isFirstSegment),
           );
           isFirstSegment = false;
           startPoint = p2;
@@ -886,13 +1012,20 @@ extension PMFontExtension on PMFont {
             double.parse(coords[5]),
           );
           contour.addAll(
-            _processPathSegment([startPoint, p1, p2, p3], isFirstSegment),
+            _processCharacterPathSegment([
+              startPoint,
+              p1,
+              p2,
+              p3,
+            ], isFirstSegment),
           );
           isFirstSegment = false;
           startPoint = p3;
         } else if (type == 'Z') {
           if (contour.isNotEmpty) {
-            contours.add(List.from(contour));
+            // Convert to proper connected format and ensure even number of points
+            final processedContour = _ensureConnectedFormat(contour);
+            contours.add(processedContour);
             contour = [];
           }
           isFirstSegment = true;
@@ -902,8 +1035,12 @@ extension PMFontExtension on PMFont {
       }
     }
     if (contour.isNotEmpty) {
-      contours.add(List.from(contour));
+      // Convert to proper connected format and ensure even number of points
+      final processedContour = _ensureConnectedFormat(contour);
+      contours.add(processedContour);
     }
+
+    // Contours are now properly formatted for connected quadratic curves
 
     return contours;
   }

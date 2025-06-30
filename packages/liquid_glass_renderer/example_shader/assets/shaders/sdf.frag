@@ -181,61 +181,69 @@ float sdf_control_segment(in vec2 p, in vec2 A, in vec2 B, in vec2 C) {
 }
 
 // Compute the SDF for a single contour that starts at index `startIdx` and has
-// `count` control points. Returns both the distance and the closest triple in
-// the out-parameters.
+// `count` control points for connected quadratic Bézier curves.
+// Format: P0(start), P1(control), P2(end/start), P3(control), P4(end/start), ...
 float sdf_single_contour(in vec2 p, int startIdx, int count, out vec2 closest[3]) {
     float best = INF;
-
-    // Process all segments including the closing segment
-    for (int j = 0; j < count; ++j) {
-        vec2 curr = getPoint(startIdx + j);
-        vec2 next = getPoint(startIdx + (j + 1) % count);
-        vec2 currMid = 0.5 * (curr + next);
+    
+    // For closed contours: numCurves = count / 2
+    // Last curve closes back to the start point
+    int numCurves = count / 2;
+    if (numCurves == 0) return INF;
+    
+    for (int j = 0; j < numCurves; ++j) {
+        vec2 p0, p1, p2;
         
-        // Calculate previous midpoint
-        vec2 prevMid;
         if (j == 0) {
-            // For first segment, previous midpoint is between last and first point
-            vec2 last = getPoint(startIdx + count - 1);
-            vec2 first = getPoint(startIdx);
-            prevMid = 0.5 * (last + first);
+            // First curve: uses points 0, 1, 2
+            p0 = getPoint(startIdx);     // Start point
+            p1 = getPoint(startIdx + 1); // Control point
+            p2 = getPoint(startIdx + 2); // End point
+        } else if (j == numCurves - 1) {
+            // Last curve: close the loop back to start
+            p0 = getPoint(startIdx + 2 * j);     // Start (last point)
+            p1 = getPoint(startIdx + 2 * j + 1); // Control point
+            p2 = getPoint(startIdx);             // End (back to first point)
         } else {
-            // For other segments, use previous point and current point
-            vec2 prevPoint = getPoint(startIdx + j - 1);
-            prevMid = 0.5 * (prevPoint + curr);
+            // Middle curves: start from previous end point
+            p0 = getPoint(startIdx + 2 * j);     // Start (shared with previous end)
+            p1 = getPoint(startIdx + 2 * j + 1); // Control point
+            p2 = getPoint(startIdx + 2 * j + 2); // End point
         }
         
-        float ds = sdf_control_segment(p, prevMid, curr, currMid);
-        if (abs(ds) < abs(best)) {
-            closest[0] = prevMid;
-            closest[1] = curr;
-            closest[2] = currMid;
-            best = ds;
+        // Calculate distance to this quadratic Bézier curve
+        float ds = abs(sdf_bezier(p, p0, p1, p2));
+        if (ds < abs(best)) {
+            closest[0] = p0;
+            closest[1] = p1;
+            closest[2] = p2;
+            best = sdf_bezier(p, p0, p1, p2); // Keep the signed distance
         }
     }
-
-    // Refine distance with quadratic Bézier for the closest triple
-    return sdf_bezier(p, closest[0], closest[1], closest[2]);
+    
+    return best;
 }
 
 // Winding number calculation for a single Bézier segment
 // Returns +1 or -1 for upward/downward crossings, 0 for no crossing
 int windingContribution(in vec2 p, in vec2 A, in vec2 B, in vec2 C) {
+    const float EPS = 1e-6;
+    
     // For quadratic Bézier, solve for y-intersections with horizontal ray from p
     float a = A.y - 2.0*B.y + C.y;
     float b = -2.0*A.y + 2.0*B.y;
     float c = A.y - p.y;
     
-    if (abs(a) < 1e-8) {
+    if (abs(a) < EPS) {
         // Linear case: a ≈ 0, solve bt + c = 0
-        if (abs(b) > 1e-8) {
+        if (abs(b) > EPS) {
             float t = -c / b;
-            if (t >= 0.0 && t <= 1.0) {
+            if (t > EPS && t < 1.0 - EPS) {
                 float x = mix(mix(A.x, B.x, t), mix(B.x, C.x, t), t);
-                if (x <= p.x) {
+                if (x < p.x - EPS) {
                     // Check if going up or down by looking at tangent
                     float dy = mix(B.y, C.y, t) - mix(A.y, B.y, t);
-                    return dy > 0.0 ? 1 : -1;
+                    return (dy > EPS) ? 1 : ((dy < -EPS) ? -1 : 0);
                 }
             }
         }
@@ -252,20 +260,20 @@ int windingContribution(in vec2 p, in vec2 A, in vec2 B, in vec2 C) {
     int winding = 0;
     
     // Check first root
-    if (t.x >= 0.0 && t.x <= 1.0) {
+    if (t.x > EPS && t.x < 1.0 - EPS) {
         float x = mix(mix(A.x, B.x, t.x), mix(B.x, C.x, t.x), t.x);
-        if (x <= p.x) {
+        if (x < p.x - EPS) {
             float dy = mix(B.y, C.y, t.x) - mix(A.y, B.y, t.x);
-            winding += dy > 0.0 ? 1 : -1;
+            winding += (dy > EPS) ? 1 : ((dy < -EPS) ? -1 : 0);
         }
     }
     
     // Check second root (only if different from first)
-    if (abs(t.y - t.x) > 1e-8 && t.y >= 0.0 && t.y <= 1.0) {
+    if (abs(t.y - t.x) > EPS && t.y > EPS && t.y < 1.0 - EPS) {
         float x = mix(mix(A.x, B.x, t.y), mix(B.x, C.x, t.y), t.y);
-        if (x <= p.x) {
+        if (x < p.x - EPS) {
             float dy = mix(B.y, C.y, t.y) - mix(A.y, B.y, t.y);
-            winding += dy > 0.0 ? 1 : -1;
+            winding += (dy > EPS) ? 1 : ((dy < -EPS) ? -1 : 0);
         }
     }
     
@@ -292,29 +300,35 @@ float sdf_bezier_shape_multi(in vec2 p, in int totalPoints) {
         int count = 0;
         while (i < totalPoints && !isSeparator(i)) { i++; count++; }
 
-        // Process all segments in this contour
-        for (int j = 0; j < count; ++j) {
-            vec2 curr = getPoint(start + j);
-            vec2 next = getPoint(start + (j + 1) % count);
-            vec2 currMid = 0.5 * (curr + next);
+        // Process connected quadratic Bézier curves in this contour
+        // For a closed contour, we need one more curve to close the loop
+        int numCurves = count / 2;
+        for (int j = 0; j < numCurves; ++j) {
+            vec2 p0, p1, p2;
             
-            // Calculate previous midpoint
-            vec2 prevMid;
             if (j == 0) {
-                vec2 last = getPoint(start + count - 1);
-                vec2 first = getPoint(start);
-                prevMid = 0.5 * (last + first);
+                // First curve: uses points 0, 1, 2
+                p0 = getPoint(start);     // Start point
+                p1 = getPoint(start + 1); // Control point
+                p2 = getPoint(start + 2); // End point
+            } else if (j == numCurves - 1) {
+                // Last curve: close the loop back to start
+                p0 = getPoint(start + 2 * j);     // Start (last point)
+                p1 = getPoint(start + 2 * j + 1); // Control point (should be last control)
+                p2 = getPoint(start);             // End (back to first point)
             } else {
-                vec2 prevPoint = getPoint(start + j - 1);
-                prevMid = 0.5 * (prevPoint + curr);
+                // Middle curves: start from previous end point
+                p0 = getPoint(start + 2 * j);     // Start (shared with previous end)
+                p1 = getPoint(start + 2 * j + 1); // Control point
+                p2 = getPoint(start + 2 * j + 2); // End point
             }
             
             // Distance calculation
-            float d = sdf_bezier(p, prevMid, curr, currMid);
+            float d = sdf_bezier(p, p0, p1, p2);
             minDistance = min(minDistance, abs(d));
             
             // Winding number calculation
-            windingNumber += windingContribution(p, prevMid, curr, currMid);
+            windingNumber += windingContribution(p, p0, p1, p2);
         }
     }
 
@@ -361,29 +375,31 @@ void main() {
         int cnt = 0;
         while (iDbg < numPoints && !isSeparator(iDbg)) { iDbg++; cnt++; }
 
-        // Need at least 2 points
-        if (cnt < 2) continue;
-
-        vec2 first = getPoint(start);
-        
-        // Handle all segments including the closing segment
-        for (int k = 0; k < cnt; ++k) {
-            vec2 curr = getPoint(start + k);
-            vec2 next = getPoint(start + (k + 1) % cnt);
-            vec2 midCurr = 0.5 * (curr + next);
+        // Draw control polygon for connected quadratic Bézier curves
+        int numCurves = cnt / 2;
+        for (int k = 0; k < numCurves; ++k) {
+            vec2 p0, p1, p2;
             
-            // For the previous midpoint, use either the previous iteration's midNext
-            // or for the first iteration, use the midpoint between last and first
-            vec2 midPrev;
             if (k == 0) {
-                vec2 last = getPoint(start + cnt - 1);
-                midPrev = 0.5 * (last + first);
+                // First curve: uses points 0, 1, 2
+                p0 = getPoint(start);     // Start point
+                p1 = getPoint(start + 1); // Control point
+                p2 = getPoint(start + 2); // End point
+            } else if (k == numCurves - 1) {
+                // Last curve: close the loop back to start
+                p0 = getPoint(start + 2 * k);     // Start (last point)
+                p1 = getPoint(start + 2 * k + 1); // Control point
+                p2 = getPoint(start);             // End (back to first point)
             } else {
-                vec2 prevPoint = getPoint(start + k - 1);
-                midPrev = 0.5 * (prevPoint + curr);
+                // Middle curves: start from previous end point
+                p0 = getPoint(start + 2 * k);     // Start (shared with previous end)
+                p1 = getPoint(start + 2 * k + 1); // Control point
+                p2 = getPoint(start + 2 * k + 2); // End point
             }
             
-            dbg = abs_min(dbg, sdf_control_segment(p, midPrev, curr, midCurr));
+            // Draw lines from start to control to end
+            dbg = abs_min(dbg, sdf_line(p, p0, p1));
+            dbg = abs_min(dbg, sdf_line(p, p1, p2));
         }
     }
 
