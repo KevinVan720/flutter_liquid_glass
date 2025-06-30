@@ -44,23 +44,20 @@ layout(location = 0) out vec4 fragColor;
 // Constants for SDF calculation
 const float INF = 1.0 / 0.0;
 const float SQRT3 = 1.732050807568877;
+const float PI = 3.14159265359;
+const float EPS = 1e-6; // Epsilon for floating point comparisons
 
-// Function to read a control point from the texture
-vec2 getControlPoint(int index) {
-    if (index >= int(uNumPoints) || uNumPoints <= 0.0) {
-        return vec2(0.0);
-    }
-    
-    // Sample from texture: each point is stored as a pixel
-    // x-coordinate in red channel, y-coordinate in green channel
-    float u = (float(index) + 0.5) / uNumPoints; // Center of pixel
+// Fetch a point from the control point texture.
+// Decodes the 12-bit packed coordinates and other metadata.
+vec4 get_point_data(float index) {
+    float u = (index + 0.5) / uNumPoints;
     vec4 texel = texture(uControlPointsTexture, vec2(u, 0.5));
     
-    // Decode the encoded pixel coordinates
+    // Decode 12-bit coordinates from RGBA channels
     float x = float(int(texel.r * 255.0) | ((int(texel.b * 255.0) & 0x0F) << 8));
     float y = float(int(texel.g * 255.0) | (((int(texel.b * 255.0) >> 4) & 0x0F) << 8));
     
-    return vec2(x, y);
+    return vec4(x, y, 0.0, texel.a); // z is unused, alpha has metadata
 }
 
 // Cross-product of two 2D vectors
@@ -180,15 +177,15 @@ float sdf_control_polygon(in vec2 p, in int controlPolySize, out vec2 closest[3]
     float ds = 0.0;
 
     // First n-2 segments
-    vec2 c = 0.5 * (getControlPoint(0) + getControlPoint(1));
+    vec2 c = 0.5 * (get_point_data(0).xy + get_point_data(1).xy);
     vec2 prev = c;
     for (int i = 1; i < controlPolySize - 1; ++i) {
         prev = c;
-        c = 0.5 * (getControlPoint(i) + getControlPoint(i+1));
-        ds = sdf_control_segment(p, prev, getControlPoint(i), c);
+        c = 0.5 * (get_point_data(i).xy + get_point_data(i+1).xy);
+        ds = sdf_control_segment(p, prev, get_point_data(i).xy, c);
         if (abs(ds) < abs(d)) {
             closest[0] = prev;
-            closest[1] = getControlPoint(i);
+            closest[1] = get_point_data(i).xy;
             closest[2] = c;
             d = ds;
         }
@@ -196,22 +193,22 @@ float sdf_control_polygon(in vec2 p, in int controlPolySize, out vec2 closest[3]
 
     // Last-but-one segment
     prev = c;
-    c = 0.5 * (getControlPoint(controlPolySize-1) + getControlPoint(0));
-    ds = sdf_control_segment(p, prev, getControlPoint(controlPolySize-1), c);
+    c = 0.5 * (get_point_data(controlPolySize-1).xy + get_point_data(0).xy);
+    ds = sdf_control_segment(p, prev, get_point_data(controlPolySize-1).xy, c);
     if (abs(ds) < abs(d)) {
         closest[0] = prev;
-        closest[1] = getControlPoint(controlPolySize-1);
+        closest[1] = get_point_data(controlPolySize-1).xy;
         closest[2] = c;
         d = ds;
     }
 
     // Last segment
     prev = c;
-    c = 0.5 * (getControlPoint(0) + getControlPoint(1));
-    ds = sdf_control_segment(p, prev, getControlPoint(0), c);
+    c = 0.5 * (get_point_data(0).xy + get_point_data(1).xy);
+    ds = sdf_control_segment(p, prev, get_point_data(0).xy, c);
     if (abs(ds) < abs(d)) {
         closest[0] = prev;
-        closest[1] = getControlPoint(0);
+        closest[1] = get_point_data(0).xy;
         closest[2] = c;
         d = ds;
     }
@@ -230,17 +227,130 @@ float sdf_bezier_shape(in vec2 p, in int controlPolySize) {
     return sdf_bezier(p, closest[0], closest[1], closest[2]);
 }
 
-float sceneSDF(vec2 p) {
-    int numPoints = int(uNumPoints);
-    if (numPoints < 3) {
-        // Fallback: create a simple rounded rectangle in the center
-        vec2 center = uSize * 0.5;
-        vec2 size = uSize * 0.4; // 40% of screen size
-        vec2 d = abs(p - center) - size * 0.5;
-        float cornerRadius = min(size.x, size.y) * 0.3;
-        return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - cornerRadius;
+// Calculate the signed distance from a point to a single closed contour
+// made of connected quadratic Bézier curves.
+float sdf_single_contour(vec2 p, int start_idx, int count) {
+    if (count < 2) return 1e6;
+
+    float d = 1e20; // Large value for minimum distance
+    int winding_number = 0;
+
+    vec2 p0 = get_point_data(float(start_idx)).xy;
+
+    for (int i = 0; i < count; i += 2) {
+        vec2 p1 = get_point_data(float(start_idx + i + 1)).xy;
+        vec2 p2 = (i + 2 < count)
+            ? get_point_data(float(start_idx + i + 2)).xy
+            : p0; // Close the loop
+
+        // Update overall minimum distance
+        d = min(d, abs(sdf_bezier(p, p0, p1, p2)));
+
+        // --- Winding number calculation ---
+        vec2 a = p0 - p;
+        vec2 b = p1 - p;
+        vec2 c = p2 - p;
+
+        float angle_a = atan(a.y, a.x);
+        float angle_b = atan(b.y, b.x);
+        float angle_c = atan(c.y, c.x);
+
+        // Normalize angles to be relative to the start point's angle
+        float d_ab = angle_b - angle_a;
+        float d_bc = angle_c - angle_b;
+
+        // Wrap angles to [-PI, PI]
+        if (d_ab > PI) d_ab -= 2.0 * PI;
+        if (d_ab < -PI) d_ab += 2.0 * PI;
+        if (d_bc > PI) d_bc -= 2.0 * PI;
+        if (d_bc < -PI) d_bc += 2.0 * PI;
+
+        // Simplified root finding for the derivative of the angle
+        float t = clamp(dot(a, a-b) / dot(a-b, a-b), 0.0, 1.0);
+        float min_angle = angle_a + t * d_ab;
+        
+        float t2_num = dot(a-b, a-2.0*b+c);
+        float t2_den = dot(a-2.0*b+c, a-2.0*b+c);
+        
+        if (abs(t2_den) > EPS) {
+            float t2 = clamp(-t2_num / t2_den, 0.0, 1.0);
+            
+            vec2 q = (1.0-t2)*(1.0-t2)*a + 2.0*(1.0-t2)*t2*b + t2*t2*c;
+            float min_angle_bez = atan(q.y, q.x);
+
+            if (min_angle_bez < min(angle_a, angle_c) || min_angle_bez > max(angle_a, angle_c)) {
+                 // ignore
+            } else {
+                min_angle = min_angle_bez;
+            }
+        }
+        
+        bool crosses_positive_ray = (angle_a < 0.0 && angle_c > 0.0 && min_angle < 0.0) ||
+                                    (angle_a > 0.0 && angle_c < 0.0 && min_angle > 0.0);
+
+        if (crosses_positive_ray) {
+             if (cross2(p1 - p0, p2 - p1) >= 0.0) { // check convexity at join
+                 winding_number++;
+             } else {
+                 winding_number--;
+             }
+        }
+
+        p0 = p2; // Move to the next start point
     }
-    return sdf_bezier_shape(p, numPoints);
+
+    // If winding number is non-zero, we are inside. Negate the distance.
+    return (winding_number == 0) ? d : -d;
+}
+
+float sceneSDF(vec2 p) {
+    int num_pts = int(uNumPoints);
+    if (num_pts < 2) {
+        // Fallback for empty or invalid data: a large distance, so nothing is rendered.
+        return 1e6;
+    }
+
+    float d = 1e20; // Initialize with a large distance
+    int start_idx = 0;
+    int point_count = 0;
+
+    // Loop through all points to find contours separated by a special pixel
+    for (int i = 0; i < num_pts; ++i) {
+        vec4 pt_data = get_point_data(float(i));
+        
+        // Alpha == 0 indicates a separator
+        if (pt_data.a == 0.0) {
+            if (point_count > 0) {
+                // Read orientation from the first point's alpha
+                float orientation_alpha = get_point_data(float(start_idx)).a;
+                float orientation = (orientation_alpha * 255.0 < 128.0) ? 1.0 : -1.0; // CCW < 0.5, CW > 0.5
+                
+                float contour_sdf = sdf_single_contour(p, start_idx, point_count);
+
+                // Union (min) for outer shapes, subtraction (max) for inner holes
+                d = (orientation > 0.0)
+                    ? min(d, contour_sdf)
+                    : max(d, -contour_sdf);
+            }
+            start_idx = i + 1;
+            point_count = 0;
+        } else {
+            point_count++;
+        }
+    }
+
+    // Process the last contour
+    if (point_count > 0) {
+        float orientation_alpha = get_point_data(float(start_idx)).a;
+        float orientation = (orientation_alpha * 255.0 < 128.0) ? 1.0 : -1.0;
+
+        float contour_sdf = sdf_single_contour(p, start_idx, point_count);
+        d = (orientation > 0.0)
+            ? min(d, contour_sdf)
+            : max(d, -contour_sdf);
+    }
+    
+    return d;
 }
 
 // Calculate 3D normal using derivatives

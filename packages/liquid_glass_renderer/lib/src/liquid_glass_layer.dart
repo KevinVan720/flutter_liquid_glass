@@ -172,7 +172,7 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
 
   // Control points texture management
   ui.Image? _controlPointsTexture;
-  List<Offset> _lastControlPoints = [];
+  List<List<Offset>> _lastContours = [];
 
   // Constants for control points generation
   static const int cubicSubdivisionSegments = 3;
@@ -268,34 +268,17 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
 
             if (needsUpdate) {
               // Generate scaled control points from bezier shape
-              final scaledControlPoints = _extractControlPointsFromBezierShape(
-                bezierShape,
-                shapeRect,
-              );
+              final scaledContours =
+                  _extractContoursFromBezierShape(bezierShape, shapeRect);
 
-              // Create new cache (texture will be generated asynchronously)
+              // For now, we flatten the contours for the cache.
+              // This cache is only used for change detection.
               final newCache = BezierShapeCache(
                 rect: shapeRect,
-                scaledControlPoints: scaledControlPoints,
+                scaledControlPoints: scaledContours.expand((c) => c).toList(),
               );
 
               rawShape = rawShape.copyWith(bezierCache: newCache);
-
-              // Generate texture asynchronously if we have valid control points
-              if (scaledControlPoints.isNotEmpty) {
-                _createControlPointsTexture(scaledControlPoints)
-                    .then((texture) {
-                  // Update the cache with the texture
-                  final updatedCache = newCache.copyWith(texture: texture);
-                  final updatedShape =
-                      rawShape.copyWith(bezierCache: updatedCache);
-
-                  // Store the updated shape back (we'll need a way to update this)
-                  markNeedsPaint();
-                }).catchError((e) {
-                  debugPrint('Failed to create texture for bezier shape: $e');
-                });
-              }
             }
           }
 
@@ -310,51 +293,60 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
     return result;
   }
 
-  /// Generate control points for bezier shapes
-  List<Offset> _generateControlPointsFromShape(LiquidShape shape, Rect rect) {
-    if (shape is BezierShape) {
-      return _extractControlPointsFromBezierShape(shape, rect);
-    } else {
-      // For other shapes, create a fallback control points representation
-      return _createFallbackControlPoints(rect);
-    }
-  }
-
-  List<Offset> _extractControlPointsFromBezierShape(
-      BezierShape bezierShape, Rect rect) {
+  List<List<Offset>> _extractContoursFromBezierShape(
+    BezierShape bezierShape,
+    Rect rect,
+  ) {
     try {
-      final scaled = <Offset>[];
+      final scaledContours = <List<Offset>>[];
 
-      for (final contour in bezierShape.contours) {
-        for (final point in contour) {
-          scaled.add(Offset(
-            point.dx * rect.width + rect.left,
-            point.dy * rect.height + rect.top,
-          ));
-        }
+      final double scale;
+      final Offset translation;
+
+      // Fit the unit square shape into the destination rect, preserving aspect ratio.
+      if (rect.width > rect.height) {
+        // Letterbox (landscape rect)
+        scale = rect.height;
+        translation =
+            Offset(rect.left + (rect.width - rect.height) / 2.0, rect.top);
+      } else {
+        // Pillarbox (portrait rect)
+        scale = rect.width;
+        translation =
+            Offset(rect.left, rect.top + (rect.height - rect.width) / 2.0);
       }
 
-      return scaled;
+      for (final contour in bezierShape.contours) {
+        final scaledContour = <Offset>[];
+        for (final point in contour) {
+          scaledContour.add(Offset(
+            point.dx * scale + translation.dx,
+            point.dy * scale + translation.dy,
+          ));
+        }
+        scaledContours.add(scaledContour);
+      }
+
+      return scaledContours;
     } catch (e) {
       debugPrint('Error extracting control points from BezierShape: $e');
-      return _createFallbackControlPoints(rect);
+      return [_createFallbackControlPoints(rect)];
     }
   }
 
   List<Offset> _createFallbackControlPoints(Rect rect) {
-    // Create a simple rounded rectangle as fallback
+    // Create a simple circle as fallback
     final points = <Offset>[];
     const numPoints = 12;
 
     final center = rect.center;
-    final radiusX = rect.width * 0.5 * 0.8;
-    final radiusY = rect.height * 0.5 * 0.8;
+    final radius = math.min(rect.width, rect.height) * 0.5 * 0.8;
 
     for (int i = 0; i < numPoints; i++) {
       final t = i / numPoints;
       final angle = t * 2 * math.pi;
-      final x = center.dx + radiusX * math.cos(angle);
-      final y = center.dy + radiusY * math.sin(angle);
+      final x = center.dx + radius * math.cos(angle);
+      final y = center.dy + radius * math.sin(angle);
       points.add(Offset(x, y));
     }
 
@@ -364,156 +356,104 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
   /// Generate control points for all registered shapes using cached data
   List<List<Offset>> _collectAllContours(
       List<(RenderLiquidGlass, RawShape)> shapes) {
-    final contours = <List<Offset>>[];
-    final layerGlobalOffset = localToGlobal(Offset.zero);
+    final allContours = <List<Offset>>[];
 
     for (final (shapeRender, rawShape) in shapes) {
       if (shapeRender.attached && shapeRender.hasSize) {
         try {
-          // Use layerGlobalOffset to calculate actual relative position
-          final shapeGlobalOffset = shapeRender.localToGlobal(Offset.zero);
-          final shapeRelativeToLayer = shapeGlobalOffset - layerGlobalOffset;
+          // 1. Define the shape's bounds in its own local coordinate system.
+          final shapeRect = Offset.zero & shapeRender.size;
 
-          List<Offset> controlPoints;
-
-          if (rawShape.type == RawShapeType.bezier &&
-              rawShape.bezierCache != null) {
-            // Use cached control points
-            controlPoints = rawShape.bezierCache!.scaledControlPoints;
+          // 2. Generate contours in the shape's local logical coordinates.
+          List<List<Offset>> localLogicalContours;
+          if (shapeRender.shape is BezierShape) {
+            final bezierShape = shapeRender.shape as BezierShape;
+            localLogicalContours =
+                _extractContoursFromBezierShape(bezierShape, shapeRect);
           } else {
-            // Fallback to generating control points (for non-morphable shapes)
-            final shapeRect = shapeRelativeToLayer & shapeRender.size;
-            controlPoints =
-                _generateControlPointsFromShape(shapeRender.shape, shapeRect);
+            localLogicalContours = [_createFallbackControlPoints(shapeRect)];
           }
 
-          // Scale control points by device pixel ratio only
-          final transformedPoints = controlPoints.map((point) {
-            return Offset(
-              (point.dx + shapeGlobalOffset.dx) * _devicePixelRatio,
-              (point.dy + shapeGlobalOffset.dy) * _devicePixelRatio,
-            );
-          }).toList();
+          // 3. Get the transformation matrix from the shape's local space to the
+          //    global screen space.
+          final transform = shapeRender.getTransformTo(null);
 
-          // Ensure we treat each shape as its own contour unless the raw shape
-          // already encodes multiple contours (BezierShape update).
-          contours.add(transformedPoints);
+          // 4. Apply the transformation to each point and convert to physical pixels.
+          for (final contour in localLogicalContours) {
+            allContours.add(
+              contour.map((p) {
+                // Transform point from local logical to global logical coordinates.
+                final globalLogicalPoint =
+                    MatrixUtils.transformPoint(transform, p);
+                // Convert global logical coordinates to global physical coordinates.
+                return Offset(
+                  globalLogicalPoint.dx * _devicePixelRatio,
+                  globalLogicalPoint.dy * _devicePixelRatio,
+                );
+              }).toList(),
+            );
+          }
         } catch (e) {
           debugPrint('Failed to collect control points for shape: $e');
         }
       }
     }
-
-    return contours;
+    return allContours;
   }
 
-  /// Get the combined texture from all bezier shapes
-  ui.Image? _getCombinedBezierTexture(
-      List<(RenderLiquidGlass, RawShape)> shapes) {
-    // For now, return the first available texture
-    // In the future, we could combine multiple textures
-    for (final (_, rawShape) in shapes) {
-      if (rawShape.type == RawShapeType.bezier &&
-          rawShape.bezierCache?.texture != null) {
-        return rawShape.bezierCache!.texture;
-      }
-    }
-    return null;
-  }
-
-  Future<ui.Image> _createControlPointsTexture(List<Offset> points) async {
-    if (points.isEmpty) {
-      // Create a dummy texture with one point
-      points = [const Offset(0, 0)];
-    }
-
-    final width = points.length;
-    const height = 1;
-    final pixels = Uint8List(width * height * 4);
-
-    for (int i = 0; i < points.length; i++) {
-      final point = points[i];
-      final pixelIndex = i * 4;
-
-      // Encode pixel coordinates in texture channels
-      // The shader will decode these back to actual coordinates
-      final x = point.dx.clamp(0.0, 4095.0);
-      final y = point.dy.clamp(0.0, 4095.0);
-
-      // Store as 12-bit values in RGBA channels
-      final xInt = x.round();
-      final yInt = y.round();
-
-      pixels[pixelIndex] = (xInt & 0xFF); // Red = X lower 8 bits
-      pixels[pixelIndex + 1] = (yInt & 0xFF); // Green = Y lower 8 bits
-      pixels[pixelIndex + 2] = ((xInt >> 8) & 0x0F) |
-          (((yInt >> 8) & 0x0F) << 4); // Blue = upper 4 bits
-      pixels[pixelIndex + 3] = 255; // Alpha = 1.0
-    }
-
-    final completer = Completer<ui.Image>();
-    ui.decodeImageFromPixels(
-      pixels,
-      width,
-      height,
-      ui.PixelFormat.rgba8888,
-      (image) => completer.complete(image),
-    );
-
-    return completer.future;
-  }
-
-  double _signedArea(List<Offset> pts) {
-    double area = 0;
-    for (int i = 0; i < pts.length; i++) {
-      final j = (i + 1) % pts.length;
-      area += pts[i].dx * pts[j].dy - pts[j].dx * pts[i].dy;
-    }
-    return area * 0.5;
-  }
-
-  Future<ui.Image> _encodeContoursToTexture(List<List<Offset>> contours) async {
+  Future<ui.Image> _encodeContoursToTexture(
+    List<List<Offset>> contours,
+  ) async {
     // Flatten with separators
-    final totalPoints =
-        contours.fold<int>(0, (sum, c) => sum + c.length) +
-            (contours.length - 1);
+    final totalPoints = contours.fold<int>(0, (sum, c) => sum + c.length) +
+        (contours.length - 1);
 
     final width = totalPoints > 0 ? totalPoints : 1;
     const height = 1;
     final pixels = Uint8List(width * 4);
-
     int cursor = 0;
+
     for (int ci = 0; ci < contours.length; ci++) {
       final contour = contours[ci];
       if (contour.isEmpty) continue;
 
       final orientSign = _signedArea(contour) >= 0 ? 1 : -1;
-      final alphaFirst = orientSign > 0 ? 32 : 64; // CCW=32, CW=64
+      final orientationEncoded =
+          orientSign > 0 ? 0.25 : 0.75; // CCW -> 0.25, CW -> 0.75
 
       for (int pi = 0; pi < contour.length; pi++) {
         final pt = contour[pi];
         final px = cursor * 4;
 
+        // Encode coordinates directly using a 12-bit scheme for precision.
         final x = pt.dx.clamp(0.0, 4095.0).round();
         final y = pt.dy.clamp(0.0, 4095.0).round();
 
-        pixels[px] = x & 0xFF;
-        pixels[px + 1] = y & 0xFF;
-        pixels[px + 2] = ((x >> 8) & 0x0F) | (((y >> 8) & 0x0F) << 4);
-        pixels[px + 3] = pi == 0 ? alphaFirst : 255; // meta in alpha
+        pixels[px] = x & 0xFF; // Red: X lower 8 bits
+        pixels[px + 1] = y & 0xFF; // Green: Y lower 8 bits
+        pixels[px + 2] =
+            ((x >> 8) & 0x0F) | (((y >> 8) & 0x0F) << 4); // Blue: upper 4 bits
+        pixels[px + 3] = pi == 0
+            ? (orientationEncoded * 255).round()
+            : 255; // Alpha: orientation on first point, 1.0 otherwise
 
         cursor++;
       }
 
-      // Separator, except last
+      // Separator, except after last contour
       if (ci < contours.length - 1) {
         final px = cursor * 4;
         pixels[px] = 0;
         pixels[px + 1] = 0;
         pixels[px + 2] = 0;
-        pixels[px + 3] = 0; // alpha 0 marks separator
+        pixels[px + 3] = 0; // Alpha 0 marks separator
         cursor++;
       }
+    }
+
+    if (cursor == 0) {
+      // If no points, create a single separator pixel to avoid empty texture
+      pixels[3] = 0;
     }
 
     final completer = Completer<ui.Image>();
@@ -526,6 +466,15 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
     );
 
     return completer.future;
+  }
+
+  double _signedArea(List<Offset> pts) {
+    double area = 0;
+    for (int i = 0; i < pts.length; i++) {
+      final j = (i + 1) % pts.length;
+      area += pts[i].dx * pts[j].dy - pts[j].dx * pts[i].dy;
+    }
+    return area * 0.5;
   }
 
   @override
@@ -579,14 +528,8 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
       }
     } else {
       // Use bezier shapes with control points
-      // Try to get cached texture first
-      final cachedTexture = _getCombinedBezierTexture(shapes);
-
-      // Fallback: Update control points texture if needed and no cached texture available
-      if (cachedTexture == null &&
-          !_listsEqual(_lastControlPoints,
-              contours.expand((c) => c).toList())) {
-        _lastControlPoints = List.from(contours.expand((c) => c));
+      if (!_listsEqual(_lastContours, contours)) {
+        _lastContours = contours;
 
         // Create control points texture if needed (async, non-blocking)
         _encodeContoursToTexture(contours).then((texture) {
@@ -615,11 +558,9 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
           ..setFloat(12, encodedPointCount.toDouble()); // uNumPoints
 
         // Set control points texture to sampler 1 (sampler 0 is auto-provided by BackdropFilterLayer)
-        // Prefer cached texture over fallback texture
-        final textureToUse = cachedTexture ?? _controlPointsTexture;
-        if (textureToUse != null) {
+        if (_controlPointsTexture != null) {
           try {
-            _shader.setImageSampler(1, textureToUse);
+            _shader.setImageSampler(1, _controlPointsTexture!);
           } catch (e) {
             debugPrint('Failed to set control points texture: $e');
           }
@@ -653,7 +594,11 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
   bool _listsEqual<T>(List<T> a, List<T> b) {
     if (a.length != b.length) return false;
     for (int i = 0; i < a.length; i++) {
-      if (a[i] != b[i]) return false;
+      if (a[i] is List && b[i] is List) {
+        if (!_listsEqual(a[i] as List, b[i] as List)) return false;
+      } else if (a[i] != b[i]) {
+        return false;
+      }
     }
     return true;
   }

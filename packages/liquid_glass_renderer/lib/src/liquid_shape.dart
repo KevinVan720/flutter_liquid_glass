@@ -154,16 +154,17 @@ class LiquidRoundedRectangle extends LiquidShape {
 /// bezier curves. Every 3 consecutive points form a quadratic bezier curve:
 /// [startPoint, controlPoint, endPoint, startPoint2, controlPoint2, endPoint2, ...]
 ///
-/// The points should be normalized (0.0 to 1.0) and will be scaled to fit
-/// within the widget bounds.
+/// The points should be normalized to fit within a 0.0 to 1.0 square and
+/// will be scaled to fit within the widget's bounds.
 class BezierShape extends LiquidShape {
   /// Creates a [BezierShape]. You can pass either a flat list of control points
   /// (legacy API) or the new, recommended `contours` parameter which allows
   /// multiple closed paths.
   ///
-  /// Each contour is a list of points that form quadratic Bézier curves in
-  /// groups of three: `[start, control, end, start2, control2, end2, ...]`.
-  /// All points must be normalised to the unit square.
+  /// Each contour is a list of points that form **connected** quadratic Bézier
+  /// curves. The format is `[start, control, end, control2, end2, ...]`,
+  /// where each curve shares its start point with the previous curve's end point.
+  /// All points must be normalised to the unit square (0.0 to 1.0).
   BezierShape({
     List<Offset>? controlPoints,
     List<List<Offset>>? contours,
@@ -200,22 +201,38 @@ class BezierShape extends LiquidShape {
     final offsetY = rect.top;
 
     for (final contour in contours) {
-      if (contour.length < 3) continue;
+      if (contour.length < 2) continue;
 
       // Move to first point of contour
       final start = contour.first;
       path.moveTo(offsetX + start.dx * scaleX, offsetY + start.dy * scaleY);
 
-      // iterate groups (skip first)
-      for (int i = 1; i < contour.length - 1; i += 2) {
-        if (i + 1 >= contour.length) break;
-        final control = contour[i];
-        final end = contour[i + 1];
+      // We need at least 2 points for a connected curve (e.g., P0, C1 -> P0)
+      if (contour.length == 2) {
         path.quadraticBezierTo(
-          offsetX + control.dx * scaleX,
-          offsetY + control.dy * scaleY,
-          offsetX + end.dx * scaleX,
-          offsetY + end.dy * scaleY,
+          offsetX + contour[1].dx * scaleX,
+          offsetY + contour[1].dy * scaleY,
+          offsetX + start.dx * scaleX,
+          offsetY + start.dy * scaleY,
+        );
+        path.close();
+        continue;
+      }
+
+      // Iterate through points to form connected quadratic curves
+      for (int i = 0; i < contour.length; i += 2) {
+        if (i + 1 >= contour.length) break;
+
+        final controlPoint = contour[i + 1];
+        // If there's another point after control, it's the end point.
+        // Otherwise, loop back to the start.
+        final endPoint = (i + 2 < contour.length) ? contour[i + 2] : start;
+
+        path.quadraticBezierTo(
+          offsetX + controlPoint.dx * scaleX,
+          offsetY + controlPoint.dy * scaleY,
+          offsetX + endPoint.dx * scaleX,
+          offsetY + endPoint.dy * scaleY,
         );
       }
 

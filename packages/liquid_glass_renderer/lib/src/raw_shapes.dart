@@ -21,26 +21,13 @@ class BezierShapeCache with EquatableMixin {
   const BezierShapeCache({
     required this.rect,
     required this.scaledControlPoints,
-    this.texture,
   });
 
   final Rect rect;
   final List<Offset> scaledControlPoints;
-  final ui.Image? texture;
-
-  /// Create a copy with updated texture
-  BezierShapeCache copyWith({
-    ui.Image? texture,
-  }) {
-    return BezierShapeCache(
-      rect: rect,
-      scaledControlPoints: scaledControlPoints,
-      texture: texture ?? this.texture,
-    );
-  }
 
   @override
-  List<Object?> get props => [rect, scaledControlPoints, texture];
+  List<Object?> get props => [rect, scaledControlPoints];
 }
 
 @internal
