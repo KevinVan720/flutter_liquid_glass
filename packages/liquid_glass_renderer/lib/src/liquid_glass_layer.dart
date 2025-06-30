@@ -167,15 +167,10 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
 
   // Registry to allow shapes to find their parent layer
   static final Expando<RenderLiquidGlassLayer> layerRegistry = Expando();
-
   final Set<RenderLiquidGlass> registeredShapes = {};
+  final Map<RenderLiquidGlass, RawShape> _shapeCache = {};
 
-  // Control points texture management
-  ui.Image? _controlPointsTexture;
   List<List<Offset>> _lastContours = [];
-
-  // Constants for control points generation
-  static const int cubicSubdivisionSegments = 3;
 
   double _devicePixelRatio;
   set devicePixelRatio(double value) {
@@ -235,62 +230,53 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
     }
   }
 
-  List<(RenderLiquidGlass, RawShape)> collectShapes() {
-    final result = <(RenderLiquidGlass, RawShape)>[];
+  List<RawShape> _collectShapes() {
+    final newCache = <RenderLiquidGlass, RawShape>{};
+    final shapesToRender = <RawShape>[];
 
     for (final shapeRender in registeredShapes) {
       if (shapeRender.attached && shapeRender.hasSize) {
-        try {
-          // Get transform relative to global coordinates
-          final transform = shapeRender.getTransformTo(null);
+        final shapeSize = shapeRender.size;
+        final lastKnownShape = _shapeCache[shapeRender];
+        RawShape newShape;
 
-          final rect = MatrixUtils.transformRect(
-            transform,
-            Offset.zero & shapeRender.size,
-          );
-
+        // Check if we can reuse the cached shape object
+        if (lastKnownShape != null &&
+            lastKnownShape.bezierCache?.rect.size == shapeSize) {
+          newShape = lastKnownShape;
+        } else {
+          // If not, create a new RawShape and, if it's a BezierShape,
+          // calculate and cache its geometry.
+          final shapeRect = Offset.zero & shapeSize;
           var rawShape = RawShape.fromLiquidGlassShape(
             shapeRender.shape,
-            center: rect.center,
-            size: rect.size,
+            center: shapeRect.center,
+            size: shapeSize,
           );
 
-          // Handle bezier shape caching
-          if (rawShape.type == RawShapeType.bezier &&
-              shapeRender.shape is BezierShape) {
+          if (rawShape.type == RawShapeType.bezier) {
             final bezierShape = shapeRender.shape as BezierShape;
-            final shapeRect = Offset.zero & rect.size;
-
-            // Check if we need to update the cache
-            final existingCache = rawShape.bezierCache;
-            final needsUpdate =
-                existingCache == null || existingCache.rect != shapeRect;
-
-            if (needsUpdate) {
-              // Generate scaled control points from bezier shape
-              final scaledContours =
-                  _extractContoursFromBezierShape(bezierShape, shapeRect);
-
-              // For now, we flatten the contours for the cache.
-              // This cache is only used for change detection.
-              final newCache = BezierShapeCache(
+            final contours =
+                _extractContoursFromBezierShape(bezierShape, shapeRect);
+            rawShape = rawShape.copyWith(
+              bezierCache: BezierShapeCache(
                 rect: shapeRect,
-                scaledControlPoints: scaledContours.expand((c) => c).toList(),
-              );
-
-              rawShape = rawShape.copyWith(bezierCache: newCache);
-            }
+                scaledControlPoints: contours,
+              ),
+            );
           }
-
-          result.add((shapeRender, rawShape));
-        } catch (e) {
-          // Skip shapes that can't be transformed
-          debugPrint('Failed to collect shape: $e');
+          newShape = rawShape;
         }
+
+        newCache[shapeRender] = newShape;
+        shapesToRender.add(newShape);
       }
     }
 
-    return result;
+    _shapeCache
+      ..clear()
+      ..addAll(newCache);
+    return shapesToRender;
   }
 
   List<List<Offset>> _extractContoursFromBezierShape(
@@ -354,23 +340,28 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
   }
 
   /// Generate control points for all registered shapes using cached data
-  List<List<Offset>> _collectAllContours(
-      List<(RenderLiquidGlass, RawShape)> shapes) {
+  List<List<Offset>> _collectAllContours(List<RawShape> shapes) {
     final allContours = <List<Offset>>[];
 
-    for (final (shapeRender, rawShape) in shapes) {
-      if (shapeRender.attached && shapeRender.hasSize) {
-        try {
-          // 1. Define the shape's bounds in its own local coordinate system.
-          final shapeRect = Offset.zero & shapeRender.size;
+    // This lookup is a bit awkward, but it's necessary to get the transform
+    // from the original RenderObject.
+    final renderObjectLookup = {
+      for (final e in _shapeCache.entries) e.value: e.key
+    };
 
-          // 2. Generate contours in the shape's local logical coordinates.
+    for (final rawShape in shapes) {
+      final shapeRender = renderObjectLookup[rawShape];
+      if (shapeRender != null && shapeRender.attached && shapeRender.hasSize) {
+        try {
           List<List<Offset>> localLogicalContours;
-          if (shapeRender.shape is BezierShape) {
-            final bezierShape = shapeRender.shape as BezierShape;
-            localLogicalContours =
-                _extractContoursFromBezierShape(bezierShape, shapeRect);
+
+          if (rawShape.type == RawShapeType.bezier &&
+              rawShape.bezierCache != null) {
+            // Use cached geometry
+            localLogicalContours = rawShape.bezierCache!.scaledControlPoints;
           } else {
+            // Fallback for non-bezier shapes
+            final shapeRect = Offset.zero & rawShape.size;
             localLogicalContours = [_createFallbackControlPoints(shapeRect)];
           }
 
@@ -479,7 +470,7 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
 
   @override
   void paint(PaintingContext context, Offset offset) {
-    final shapes = collectShapes();
+    final shapes = _collectShapes();
 
     if (_settings.thickness <= 0) {
       _paintShapeContents(context, offset, shapes, glassContainsChild: true);
@@ -504,9 +495,9 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
 
     if (!hasValidControlPoints) {
       // Fallback to the original simple shape rendering
-      final shape1 = shapes.firstOrNull?.$2 ?? RawShape.none;
-      final shape2 = shapes.length > 1 ? shapes.elementAt(1).$2 : RawShape.none;
-      final shape3 = shapes.length > 2 ? shapes.elementAt(2).$2 : RawShape.none;
+      final shape1 = shapes.firstOrNull ?? RawShape.none;
+      final shape2 = shapes.length > 1 ? shapes.elementAt(1) : RawShape.none;
+      final shape3 = shapes.length > 2 ? shapes.elementAt(2) : RawShape.none;
 
       try {
         _shader
@@ -533,7 +524,19 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
 
         // Create control points texture if needed (async, non-blocking)
         _encodeContoursToTexture(contours).then((texture) {
-          _controlPointsTexture = texture;
+          // Update the cache for all shapes with the new texture
+          for (final entry in _shapeCache.entries) {
+            final shapeRender = entry.key;
+            var rawShape = entry.value;
+
+            if (rawShape.type == RawShapeType.bezier &&
+                rawShape.bezierCache != null) {
+              rawShape = rawShape.copyWith(
+                bezierCache: rawShape.bezierCache!.copyWith(texture: texture),
+              );
+              _shapeCache[shapeRender] = rawShape;
+            }
+          }
           markNeedsPaint(); // Repaint when texture is ready
         }).catchError((e) {
           debugPrint('Failed to create control points texture: $e');
@@ -557,10 +560,12 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
           ..setFloat(11, 1.51) // uRefractiveIndex
           ..setFloat(12, encodedPointCount.toDouble()); // uNumPoints
 
-        // Set control points texture to sampler 1 (sampler 0 is auto-provided by BackdropFilterLayer)
-        if (_controlPointsTexture != null) {
+        // Set control points texture to sampler 1.
+        // All shapes share the same texture, so we can grab it from the first one.
+        final textureToUse = shapes.firstOrNull?.bezierCache?.texture;
+        if (textureToUse != null) {
           try {
-            _shader.setImageSampler(1, _controlPointsTexture!);
+            _shader.setImageSampler(1, textureToUse);
           } catch (e) {
             debugPrint('Failed to set control points texture: $e');
           }
@@ -614,12 +619,19 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
   void _paintShapeContents(
     PaintingContext context,
     Offset offset,
-    List<(RenderLiquidGlass, RawShape)> shapes, {
+    List<RawShape> shapes, {
     required bool glassContainsChild,
   }) {
+    // This lookup is a bit awkward, but it's necessary to get the transform
+    // from the original RenderObject.
+    final renderObjectLookup = {
+      for (final e in _shapeCache.entries) e.value: e.key
+    };
     final layerGlobalOffset = localToGlobal(Offset.zero);
-    for (final (render, _) in shapes) {
-      if (render.glassContainsChild == glassContainsChild) {
+
+    for (final rawShape in shapes) {
+      final render = renderObjectLookup[rawShape];
+      if (render != null && render.glassContainsChild == glassContainsChild) {
         final shapeGlobalOffset = render.localToGlobal(Offset.zero);
         final relativeOffset = shapeGlobalOffset - layerGlobalOffset;
         render.paintFromLayer(context, offset + relativeOffset);
@@ -630,13 +642,22 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
   void _paintShapeBlurs(
     PaintingContext context,
     Offset offset,
-    List<(RenderLiquidGlass, RawShape)> shapes,
+    List<RawShape> shapes,
   ) {
+    // This lookup is a bit awkward, but it's necessary to get the transform
+    // from the original RenderObject.
+    final renderObjectLookup = {
+      for (final e in _shapeCache.entries) e.value: e.key
+    };
+
     final layerGlobalOffset = localToGlobal(Offset.zero);
-    for (final (render, _) in shapes) {
-      final shapeGlobalOffset = render.localToGlobal(Offset.zero);
-      final relativeOffset = shapeGlobalOffset - layerGlobalOffset;
-      render.paintBlur(context, offset + relativeOffset);
+    for (final rawShape in shapes) {
+      final render = renderObjectLookup[rawShape];
+      if (render != null) {
+        final shapeGlobalOffset = render.localToGlobal(Offset.zero);
+        final relativeOffset = shapeGlobalOffset - layerGlobalOffset;
+        render.paintBlur(context, offset + relativeOffset);
+      }
     }
   }
 }

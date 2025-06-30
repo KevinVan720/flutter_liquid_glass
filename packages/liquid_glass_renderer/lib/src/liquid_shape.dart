@@ -157,22 +157,16 @@ class LiquidRoundedRectangle extends LiquidShape {
 /// The points should be normalized to fit within a 0.0 to 1.0 square and
 /// will be scaled to fit within the widget's bounds.
 class BezierShape extends LiquidShape {
-  /// Creates a [BezierShape]. You can pass either a flat list of control points
-  /// (legacy API) or the new, recommended `contours` parameter which allows
-  /// multiple closed paths.
+  /// Creates a [BezierShape] from a list of contours.
   ///
   /// Each contour is a list of points that form **connected** quadratic Bézier
   /// curves. The format is `[start, control, end, control2, end2, ...]`,
   /// where each curve shares its start point with the previous curve's end point.
   /// All points must be normalised to the unit square (0.0 to 1.0).
-  BezierShape({
-    List<Offset>? controlPoints,
-    List<List<Offset>>? contours,
+  const BezierShape({
+    required this.contours,
     super.side = BorderSide.none,
-  })  : assert(controlPoints != null || contours != null,
-            'Either controlPoints or contours must be provided'),
-        // Wrap legacy flat list into a single-contour list for internal use.
-        contours = contours ?? [controlPoints!];
+  });
 
   /// All contours that make up this shape. Immutable after construction.
   final List<List<Offset>> contours;
@@ -260,12 +254,10 @@ class BezierShape extends LiquidShape {
   BezierShape copyWith({
     BorderSide? side,
     List<List<Offset>>? contours,
-    List<Offset>? controlPoints, // legacy
   }) {
     return BezierShape(
       side: side ?? this.side,
       contours: contours ?? this.contours,
-      controlPoints: controlPoints,
     );
   }
 

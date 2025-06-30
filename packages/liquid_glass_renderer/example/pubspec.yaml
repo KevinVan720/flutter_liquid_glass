@@ -19,6 +19,7 @@ dependencies:
   springster: ^1.0.0-dev.3
   google_fonts: ^6.2.1
   morphable_shape: ^2.0.0
+  text_to_path_maker: ^0.6.0
 
 dev_dependencies:
   flutter_test:

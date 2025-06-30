@@ -15,19 +15,33 @@ enum RawShapeType {
   bezier,
 }
 
-/// Cached data for bezier shapes to avoid recomputation
+/// Cached data for bezier shapes to avoid recomputation.
+/// This stores the geometry calculated for a specific size (`rect`).
 @internal
 class BezierShapeCache with EquatableMixin {
   const BezierShapeCache({
     required this.rect,
     required this.scaledControlPoints,
+    this.texture,
   });
 
   final Rect rect;
-  final List<Offset> scaledControlPoints;
+  final List<List<Offset>> scaledControlPoints;
+  final ui.Image? texture;
+
+  /// Create a copy with an updated texture.
+  BezierShapeCache copyWith({
+    ui.Image? texture,
+  }) {
+    return BezierShapeCache(
+      rect: rect,
+      scaledControlPoints: scaledControlPoints,
+      texture: texture ?? this.texture,
+    );
+  }
 
   @override
-  List<Object?> get props => [rect, scaledControlPoints];
+  List<Object?> get props => [rect, scaledControlPoints, texture];
 }
 
 @internal
@@ -70,7 +84,6 @@ class RawShape with EquatableMixin {
           cornerRadius: shape.borderRadius.x,
         );
       case BezierShape():
-        // For bezier shapes, we'll handle caching separately
         return RawShape(
           type: RawShapeType.bezier,
           center: center,
@@ -98,7 +111,7 @@ class RawShape with EquatableMixin {
 
   Rect get rect => topLeft & size;
 
-  /// Create a copy with bezier cache
+  /// Create a copy with an updated bezier cache.
   RawShape copyWith({
     BezierShapeCache? bezierCache,
   }) {
@@ -107,7 +120,7 @@ class RawShape with EquatableMixin {
       center: center,
       size: size,
       cornerRadius: cornerRadius,
-      bezierCache: bezierCache,
+      bezierCache: bezierCache ?? this.bezierCache,
     );
   }
 
