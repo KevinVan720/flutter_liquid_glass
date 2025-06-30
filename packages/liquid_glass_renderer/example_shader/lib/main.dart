@@ -5,9 +5,112 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:morphable_shape/morphable_shape.dart';
+import 'package:text_to_path_maker/text_to_path_maker.dart';
 
 void main() {
   runApp(const ShaderApp());
+}
+
+// Constants - adaptive subdivision based on shape complexity
+const int baseCubicSubdivisionSegments = 2; // Reduced for small shapes
+const int baseQuadraticSubdivisionSegments =
+    3; // for quadratic Bézier subdivision
+const Rect shapeRect = Rect.fromLTWH(0, 0, 400, 300);
+
+List<Offset> _processPathSegment(
+  List<Offset> pathSegment,
+  bool isFirstSegment,
+) {
+  final points = <Offset>[];
+
+  if (pathSegment.length == 4) {
+    // Cubic Bézier curve
+    final subdivided = _subdivideCubicBezier(
+      pathSegment[0],
+      pathSegment[1],
+      pathSegment[2],
+      pathSegment[3],
+    );
+    final startIndex = isFirstSegment ? 0 : 1;
+    points.addAll(subdivided.skip(startIndex).map(_normalizePoint));
+  } else if (pathSegment.length == 3) {
+    // Quadratic Bézier curve
+    final subdivided = _subdivideQuadraticBezier(
+      pathSegment[0],
+      pathSegment[1],
+      pathSegment[2],
+    );
+    final startIndex = isFirstSegment ? 0 : 1;
+    points.addAll(subdivided.skip(startIndex).map(_normalizePoint));
+  } else if (pathSegment.length == 2) {
+    // Linear segment - convert to quadratic
+    final quadraticPoints = _convertLinearToQuadratic(
+      pathSegment[0],
+      pathSegment[1],
+    );
+    final startIndex = isFirstSegment ? 0 : 1;
+    points.addAll(quadraticPoints.skip(startIndex).map(_normalizePoint));
+  }
+
+  return points;
+}
+
+List<Offset> _subdivideCubicBezier(Offset p0, Offset p1, Offset p2, Offset p3) {
+  final points = <Offset>[];
+  for (int i = 0; i <= baseCubicSubdivisionSegments; i++) {
+    final t = i / baseCubicSubdivisionSegments;
+    points.add(_cubicBezierPoint(p0, p1, p2, p3, t));
+  }
+  return points;
+}
+
+Offset _cubicBezierPoint(Offset p0, Offset p1, Offset p2, Offset p3, double t) {
+  final u = 1 - t;
+  final tt = t * t;
+  final uu = u * u;
+  final uuu = uu * u;
+  final ttt = tt * t;
+
+  return Offset(
+    uuu * p0.dx + 3 * uu * t * p1.dx + 3 * u * tt * p2.dx + ttt * p3.dx,
+    uuu * p0.dy + 3 * uu * t * p1.dy + 3 * u * tt * p2.dy + ttt * p3.dy,
+  );
+}
+
+List<Offset> _subdivideQuadraticBezier(Offset p0, Offset p1, Offset p2) {
+  final points = <Offset>[];
+  for (int i = 0; i <= baseQuadraticSubdivisionSegments; i++) {
+    final t = i / baseQuadraticSubdivisionSegments;
+    points.add(_quadraticBezierPoint(p0, p1, p2, t));
+  }
+  return points;
+}
+
+Offset _quadraticBezierPoint(Offset p0, Offset p1, Offset p2, double t) {
+  final u = 1 - t;
+  final tt = t * t;
+  final uu = u * u;
+
+  return Offset(
+    uu * p0.dx + 2 * u * t * p1.dx + tt * p2.dx,
+    uu * p0.dy + 2 * u * t * p1.dy + tt * p2.dy,
+  );
+}
+
+List<Offset> _convertLinearToQuadratic(Offset startPoint, Offset endPoint) {
+  final controlPoint = Offset(
+    (startPoint.dx + endPoint.dx) * 0.5,
+    (startPoint.dy + endPoint.dy) * 0.5,
+  );
+  return [startPoint, controlPoint, endPoint];
+}
+
+Offset _normalizePoint(Offset point) {
+  final normalizedX =
+      (point.dx - shapeRect.center.dx) / (shapeRect.width * 0.5);
+  final normalizedY =
+      (point.dy - shapeRect.center.dy) / (shapeRect.height * 0.5);
+  return Offset(normalizedX.clamp(-1.0, 1.0), normalizedY.clamp(-1.0, 1.0));
 }
 
 class ShaderApp extends StatelessWidget {
@@ -32,10 +135,6 @@ class ShaderScreen extends StatefulWidget {
 }
 
 class _ShaderScreenState extends State<ShaderScreen> {
-  // Constants - adaptive subdivision based on shape complexity
-  static const int baseCubicSubdivisionSegments = 2; // Reduced for small shapes
-  static const Rect shapeRect = Rect.fromLTWH(0, 0, 400, 300);
-
   ui.FragmentShader? shader;
 
   final List<String> shapeNames = [
@@ -48,19 +147,30 @@ class _ShaderScreenState extends State<ShaderScreen> {
     'Gear',
     'Figure 8',
     'Clover',
+    'Character SDF',
   ];
 
   String selectedShape = 'Circle';
+  String selectedCharacter = 'A';
+  final TextEditingController _characterController = TextEditingController(
+    text: 'A',
+  );
+
+  // Text-to-path maker font
+  PMFont? _pmFont;
+  bool _fontLoaded = false;
 
   @override
   void initState() {
     super.initState();
     _loadShader();
+    _loadFont();
   }
 
   @override
   void dispose() {
     shader?.dispose();
+    _characterController.dispose();
     super.dispose();
   }
 
@@ -74,6 +184,27 @@ class _ShaderScreenState extends State<ShaderScreen> {
       });
     } catch (e) {
       debugPrint('Error loading shader: $e');
+    }
+  }
+
+  Future<void> _loadFont() async {
+    try {
+      // Load the font asset
+      final data = await rootBundle.load('assets/fonts/Roboto-Regular.ttf');
+
+      // Create font reader and parse font
+      final reader = PMFontReader();
+      final font = reader.parseTTFAsset(data);
+
+      setState(() {
+        _pmFont = font;
+        _fontLoaded = true;
+      });
+    } catch (e) {
+      debugPrint('Error loading font: $e');
+      setState(() {
+        _fontLoaded = false;
+      });
     }
   }
 
@@ -160,84 +291,6 @@ class _ShaderScreenState extends State<ShaderScreen> {
     return controlPoints;
   }
 
-  List<Offset> _processPathSegment(
-    List<Offset> pathSegment,
-    bool isFirstSegment,
-  ) {
-    final points = <Offset>[];
-
-    if (pathSegment.length == 4) {
-      // Cubic Bézier curve
-      final subdivided = _subdivideCubicBezier(
-        pathSegment[0],
-        pathSegment[1],
-        pathSegment[2],
-        pathSegment[3],
-      );
-      final startIndex = isFirstSegment ? 0 : 1;
-      points.addAll(subdivided.skip(startIndex).map(_normalizePoint));
-    } else if (pathSegment.length == 2) {
-      // Linear segment - convert to quadratic
-      final quadraticPoints = _convertLinearToQuadratic(
-        pathSegment[0],
-        pathSegment[1],
-      );
-      final startIndex = isFirstSegment ? 0 : 1;
-      points.addAll(quadraticPoints.skip(startIndex).map(_normalizePoint));
-    }
-
-    return points;
-  }
-
-  List<Offset> _subdivideCubicBezier(
-    Offset p0,
-    Offset p1,
-    Offset p2,
-    Offset p3,
-  ) {
-    final points = <Offset>[];
-    for (int i = 0; i <= baseCubicSubdivisionSegments; i++) {
-      final t = i / baseCubicSubdivisionSegments;
-      points.add(_cubicBezierPoint(p0, p1, p2, p3, t));
-    }
-    return points;
-  }
-
-  Offset _cubicBezierPoint(
-    Offset p0,
-    Offset p1,
-    Offset p2,
-    Offset p3,
-    double t,
-  ) {
-    final u = 1 - t;
-    final tt = t * t;
-    final uu = u * u;
-    final uuu = uu * u;
-    final ttt = tt * t;
-
-    return Offset(
-      uuu * p0.dx + 3 * uu * t * p1.dx + 3 * u * tt * p2.dx + ttt * p3.dx,
-      uuu * p0.dy + 3 * uu * t * p1.dy + 3 * u * tt * p2.dy + ttt * p3.dy,
-    );
-  }
-
-  List<Offset> _convertLinearToQuadratic(Offset startPoint, Offset endPoint) {
-    final controlPoint = Offset(
-      (startPoint.dx + endPoint.dx) * 0.5,
-      (startPoint.dy + endPoint.dy) * 0.5,
-    );
-    return [startPoint, controlPoint, endPoint];
-  }
-
-  Offset _normalizePoint(Offset point) {
-    final normalizedX =
-        (point.dx - shapeRect.center.dx) / (shapeRect.width * 0.5);
-    final normalizedY =
-        (point.dy - shapeRect.center.dy) / (shapeRect.height * 0.5);
-    return Offset(normalizedX.clamp(-1.0, 1.0), normalizedY.clamp(-1.0, 1.0));
-  }
-
   List<Offset> _createFallbackControlPoints() {
     // Create a simple rounded rectangle as fallback
     final points = <Offset>[];
@@ -254,6 +307,24 @@ class _ShaderScreenState extends State<ShaderScreen> {
     return points;
   }
 
+  // Generate contours from character - mimics generatePathForCharacter but returns contours directly
+  List<List<Offset>> _generateCharacterContours(String character) {
+    // Check if font is loaded and extract contours directly
+    if (_fontLoaded && _pmFont != null && character.isNotEmpty) {
+      try {
+        // Get character code
+        final charCode = character.codeUnitAt(0);
+        // The extension method now handles all transformation and processing.
+        return _pmFont!.generateContoursForCharacter(charCode);
+      } catch (e) {
+        debugPrint('Error with direct contour extraction: $e');
+      }
+    }
+
+    // Fallback: Create a manual character shape
+    return [];
+  }
+
   // ‑-- NEW: generate a list of closed contours so we can handle multiple paths (e.g. glyphs)
   List<List<Offset>> _generateContoursFromShape() {
     switch (selectedShape) {
@@ -265,6 +336,8 @@ class _ShaderScreenState extends State<ShaderScreen> {
         return _generateFigure8Contours();
       case 'Clover':
         return _generateCloverContours();
+      case 'Character SDF':
+        return _generateCharacterContours(selectedCharacter);
       default:
         break;
     }
@@ -409,6 +482,53 @@ class _ShaderScreenState extends State<ShaderScreen> {
               );
             }).toList(),
           ),
+          // Show character input when Character SDF is selected
+          if (selectedShape == 'Character SDF') ...[
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                const Text(
+                  'Character: ',
+                  style: TextStyle(color: Colors.white, fontSize: 14),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    controller: _characterController,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: InputDecoration(
+                      border: const OutlineInputBorder(),
+                      enabledBorder: const OutlineInputBorder(
+                        borderSide: BorderSide(color: Colors.grey),
+                      ),
+                      focusedBorder: const OutlineInputBorder(
+                        borderSide: BorderSide(color: Colors.blue),
+                      ),
+                      hintText: _fontLoaded
+                          ? 'Enter any character (A, 中, 🌟, etc.)'
+                          : 'Enter a character (A, B, O, etc.)',
+                      hintStyle: const TextStyle(color: Colors.grey),
+                    ),
+                    maxLength: 1,
+                    onChanged: (value) {
+                      if (value.isNotEmpty) {
+                        setState(() {
+                          selectedCharacter = value.toUpperCase();
+                        });
+                      }
+                    },
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _fontLoaded
+                  ? 'Any character supported via text_to_path_maker!'
+                  : 'Font loading... Manual shapes: A, B, O (others show as rectangle)',
+              style: const TextStyle(color: Colors.grey, fontSize: 12),
+            ),
+          ],
         ],
       ),
     );
@@ -450,7 +570,9 @@ class _ShaderScreenState extends State<ShaderScreen> {
           ),
           const SizedBox(height: 8),
           Text(
-            'Using morphable_shape to generate control points for "$selectedShape".\nRed lines show the control polygon.',
+            selectedShape == 'Character SDF'
+                ? 'Displaying SDF for character "$selectedCharacter".\n${_fontLoaded ? "Using text_to_path_maker package with Roboto font." : "Font loading... Using fallback shapes for now."}'
+                : 'Using morphable_shape to generate control points for "$selectedShape".\nRed lines show the control polygon.',
             textAlign: TextAlign.center,
             style: const TextStyle(color: Colors.white70, fontSize: 14),
           ),
@@ -625,5 +747,164 @@ class ShaderPainter extends CustomPainter {
   bool shouldRepaint(covariant ShaderPainter oldDelegate) {
     return oldDelegate.controlPointsTexture != controlPointsTexture ||
         oldDelegate.numPoints != numPoints;
+  }
+}
+
+extension PMFontExtension on PMFont {
+  /// Converts a character into a Flutter [Path] you can
+  /// directly draw on a [Canvas]
+  List<List<Offset>> generateContoursForCharacter(cIndex) {
+    var svgPath = generateSVGPathForCharacter(cIndex);
+    if (svgPath.isEmpty) return [];
+
+    // Split path into individual commands (M, L, Q, C, Z)
+    final regex = RegExp(r"(?=[MLQCZ])", caseSensitive: false);
+    var commands = svgPath.split(regex).where((s) => s.isNotEmpty).toList();
+
+    // --- Pass 1: Collect all points to find bounding box ---
+    final allPoints = <Offset>[];
+    for (final command in commands) {
+      if (command.isEmpty) continue;
+      final type = command[0].toUpperCase();
+      final coords = command.substring(1).split(',');
+      try {
+        if (type == 'M' || type == 'L') {
+          allPoints.add(
+            Offset(double.parse(coords[0]), double.parse(coords[1])),
+          );
+        } else if (type == 'Q') {
+          allPoints.add(
+            Offset(double.parse(coords[0]), double.parse(coords[1])),
+          );
+          allPoints.add(
+            Offset(double.parse(coords[2]), double.parse(coords[3])),
+          );
+        } else if (type == 'C') {
+          allPoints.add(
+            Offset(double.parse(coords[0]), double.parse(coords[1])),
+          );
+          allPoints.add(
+            Offset(double.parse(coords[2]), double.parse(coords[3])),
+          );
+          allPoints.add(
+            Offset(double.parse(coords[4]), double.parse(coords[5])),
+          );
+        }
+      } catch (e) {
+        // malformed command
+      }
+    }
+
+    if (allPoints.isEmpty) return [];
+
+    // --- Calculate transform to fit points in shapeRect ---
+    double minX = double.infinity,
+        minY = double.infinity,
+        maxX = -double.infinity,
+        maxY = -double.infinity;
+
+    for (var p in allPoints) {
+      if (p.dx < minX) minX = p.dx;
+      if (p.dy < minY) minY = p.dy;
+      if (p.dx > maxX) maxX = p.dx;
+      if (p.dy > maxY) maxY = p.dy;
+    }
+
+    final cx = (minX + maxX) * 0.5;
+    final cy = (minY + maxY) * 0.5;
+    final width = maxX - minX;
+    final height = maxY - minY;
+
+    if (width == 0 || height == 0) return [];
+
+    const double paddingFactor = 0.8;
+    final maxFitWidth = shapeRect.width * paddingFactor;
+    final maxFitHeight = shapeRect.height * paddingFactor;
+    final scale = math.min(maxFitWidth / width, maxFitHeight / height);
+
+    Offset transformPoint(double x, double y) {
+      final nx = (x - cx) * scale + shapeRect.center.dx;
+      final ny = (y - cy) * -scale + shapeRect.center.dy;
+      return Offset(nx, ny);
+    }
+
+    // --- Pass 2: Process commands with transform ---
+    List<List<Offset>> contours = [];
+    List<Offset> contour = [];
+    Offset startPoint = Offset.zero;
+    bool isFirstSegment = true;
+
+    for (final command in commands) {
+      if (command.isEmpty) continue;
+      final type = command[0].toUpperCase();
+      final coords = command.substring(1).split(',');
+
+      try {
+        if (type == 'M') {
+          if (contour.isNotEmpty) {
+            contours.add(List.from(contour));
+          }
+          contour = [];
+          startPoint = transformPoint(
+            double.parse(coords[0]),
+            double.parse(coords[1]),
+          );
+          isFirstSegment = true;
+        } else if (type == 'L') {
+          final p1 = transformPoint(
+            double.parse(coords[0]),
+            double.parse(coords[1]),
+          );
+          contour.addAll(_processPathSegment([startPoint, p1], isFirstSegment));
+          isFirstSegment = false;
+          startPoint = p1;
+        } else if (type == 'Q') {
+          final p1 = transformPoint(
+            double.parse(coords[0]),
+            double.parse(coords[1]),
+          );
+          final p2 = transformPoint(
+            double.parse(coords[2]),
+            double.parse(coords[3]),
+          );
+          contour.addAll(
+            _processPathSegment([startPoint, p1, p2], isFirstSegment),
+          );
+          isFirstSegment = false;
+          startPoint = p2;
+        } else if (type == 'C') {
+          final p1 = transformPoint(
+            double.parse(coords[0]),
+            double.parse(coords[1]),
+          );
+          final p2 = transformPoint(
+            double.parse(coords[2]),
+            double.parse(coords[3]),
+          );
+          final p3 = transformPoint(
+            double.parse(coords[4]),
+            double.parse(coords[5]),
+          );
+          contour.addAll(
+            _processPathSegment([startPoint, p1, p2, p3], isFirstSegment),
+          );
+          isFirstSegment = false;
+          startPoint = p3;
+        } else if (type == 'Z') {
+          if (contour.isNotEmpty) {
+            contours.add(List.from(contour));
+            contour = [];
+          }
+          isFirstSegment = true;
+        }
+      } catch (e) {
+        // malformed command
+      }
+    }
+    if (contour.isNotEmpty) {
+      contours.add(List.from(contour));
+    }
+
+    return contours;
   }
 }

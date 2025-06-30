@@ -59,3 +59,7 @@ flutter:
   uses-material-design: true
   shaders:
     - assets/shaders/sdf.frag
+  fonts:
+    - family: Roboto
+      fonts:
+        - asset: assets/fonts/Roboto-Regular.ttf
