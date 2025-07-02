@@ -8,6 +8,7 @@ import 'package:liquid_glass_renderer/liquid_glass_renderer.dart';
 import 'package:morphable_shape/morphable_shape.dart';
 import 'package:rivership/rivership.dart';
 import 'package:smooth_sheets/smooth_sheets.dart';
+import 'text_example.dart';
 
 void main() {
   runApp(const MainApp());
@@ -204,6 +205,114 @@ class MainApp extends HookWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = ColorScheme.fromSeed(
+      brightness: Brightness.dark,
+      seedColor: Color(0xFF287390),
+    );
+
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData.from(
+        colorScheme: colorScheme,
+        textTheme: GoogleFonts.lexendDecaTextTheme().apply(
+          displayColor: colorScheme.onSurface,
+          bodyColor: colorScheme.onSurface,
+        ),
+      ),
+      home: const ExampleSelector(),
+    );
+  }
+}
+
+class ExampleSelector extends StatelessWidget {
+  const ExampleSelector({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Background(
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Text(
+                'Liquid Glass Examples',
+                style: TextStyle(
+                  fontSize: 32,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 40),
+
+              // Shapes Example Button
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const ShapesExample(),
+                    ),
+                  );
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF287390),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 32,
+                    vertical: 16,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                child: const Text(
+                  'Morphable Shapes Example',
+                  style: TextStyle(fontSize: 18),
+                ),
+              ),
+
+              const SizedBox(height: 20),
+
+              // Text Example Button
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const TextExample(),
+                    ),
+                  );
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF287390),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 32,
+                    vertical: 16,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                child: const Text(
+                  'Liquid Glass Text Example',
+                  style: TextStyle(fontSize: 18),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class ShapesExample extends HookWidget {
+  const ShapesExample({super.key});
+
+  @override
+  Widget build(BuildContext context) {
     final thicknessVisible = useState(true);
 
     // Add state to track the glass position
@@ -242,11 +351,6 @@ class MainApp extends HookWidget {
       ),
     )!;
 
-    final colorScheme = ColorScheme.fromSeed(
-      brightness: Brightness.dark,
-      seedColor: Color(0xFF287390),
-    );
-
     final beginShape = StarShapeBorder(
       corners: 6,
       inset: 40.toPercentLength,
@@ -284,62 +388,56 @@ class MainApp extends HookWidget {
       end: endShape,
     );
 
-    // Use AnimatedBuilder to rebuild when animation changes
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData.from(
-        colorScheme: colorScheme,
-        textTheme: GoogleFonts.lexendDecaTextTheme().apply(
-          displayColor: colorScheme.onSurface,
-          bodyColor: colorScheme.onSurface,
-        ),
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Morphable Shapes'),
+        backgroundColor: Colors.transparent,
+        elevation: 0,
       ),
-      home: Scaffold(
-        body: Builder(
-          builder: (context) {
-            return Background(
-              child: Stack(
-                children: [
-                  Positioned(
-                    left:
-                        glassOffset.value.dx +
-                        MediaQuery.of(context).size.width / 2 -
-                        150, // Center offset (300/2 = 150)
-                    top:
-                        glassOffset.value.dy +
-                        MediaQuery.of(context).size.height / 2 -
-                        150,
-                    child: GestureDetector(
-                      onPanUpdate: (details) {
-                        glassOffset.value = glassOffset.value + details.delta;
-                      },
-                      behavior: HitTestBehavior.opaque,
-                      child: LiquidGlass(
-                        blur: 2,
-                        glassContainsChild: true,
-                        settings: LiquidGlassSettings(
-                          thickness: thickness,
-                          lightIntensity: lightIntensityNotifier.value,
-                          ambientStrength: ambientStrengthNotifier.value,
-                          chromaticAberration: chromaticAberration,
-                          glassColor: color.withValues(
-                            alpha: color.a * thickness / 10,
-                          ),
-                          lightAngle: lightAngle,
-                          blend: blend,
+      body: Builder(
+        builder: (context) {
+          return Background(
+            child: Stack(
+              children: [
+                Positioned(
+                  left:
+                      glassOffset.value.dx +
+                      MediaQuery.of(context).size.width / 2 -
+                      150, // Center offset (300/2 = 150)
+                  top:
+                      glassOffset.value.dy +
+                      MediaQuery.of(context).size.height / 2 -
+                      150,
+                  child: GestureDetector(
+                    onPanUpdate: (details) {
+                      glassOffset.value = glassOffset.value + details.delta;
+                    },
+                    behavior: HitTestBehavior.opaque,
+                    child: LiquidGlass(
+                      blur: 2,
+                      glassContainsChild: true,
+                      settings: LiquidGlassSettings(
+                        thickness: thickness,
+                        lightIntensity: lightIntensityNotifier.value,
+                        ambientStrength: ambientStrengthNotifier.value,
+                        chromaticAberration: chromaticAberration,
+                        glassColor: color.withValues(
+                          alpha: color.a * thickness / 10,
                         ),
-                        shape: morphableShapeToBezierShape(
-                          shapeTween.lerp(shapeTweenValue)!,
-                        ),
-                        child: SizedBox(width: 300, height: 300),
+                        lightAngle: lightAngle,
+                        blend: blend,
                       ),
+                      shape: morphableShapeToBezierShape(
+                        shapeTween.lerp(shapeTweenValue)!,
+                      ),
+                      child: SizedBox(width: 300, height: 300),
                     ),
                   ),
-                ],
-              ),
-            );
-          },
-        ),
+                ),
+              ],
+            ),
+          );
+        },
       ),
     );
   }
