@@ -275,22 +275,17 @@ class _ShaderScreenState extends State<ShaderScreen> {
   }
 
   Widget _buildShaderView(List<List<Offset>> contours, int encodedPointCount) {
-    return FutureBuilder<ui.Image>(
-      future: createControlPointsTextureFromContours(contours),
-      builder: (context, snapshot) {
-        if (snapshot.hasData) {
-          return CustomPaint(
-            painter: ShaderPainter(
-              shader: shader!,
-              controlPointsTexture: snapshot.data!,
-              numPoints: encodedPointCount,
-            ),
-            size: Size.infinite,
-          );
-        } else {
-          return const Center(child: CircularProgressIndicator());
-        }
-      },
+    final controlPointsTexture = createControlPointsTextureFromContours(
+      contours,
+    );
+
+    return CustomPaint(
+      painter: ShaderPainter(
+        shader: shader!,
+        controlPointsTexture: controlPointsTexture,
+        numPoints: encodedPointCount,
+      ),
+      size: Size.infinite,
     );
   }
 

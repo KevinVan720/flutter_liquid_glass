@@ -1,6 +1,4 @@
-import 'dart:async';
 import 'dart:ui' as ui;
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 // ============================================================================
@@ -18,16 +16,19 @@ double calculateSignedArea(List<Offset> pts) {
 }
 
 /// Create texture containing all contours with separators and orientation encoding
-Future<ui.Image> createControlPointsTextureFromContours(
-  List<List<Offset>> contours,
-) async {
+ui.Image createControlPointsTextureFromContours(List<List<Offset>> contours) {
   final totalPoints =
       contours.fold<int>(0, (sum, c) => sum + c.length) +
       (contours.length - 1); // + separators
 
   final width = totalPoints;
   const height = 1;
-  final pixels = Uint8List(width * 4);
+
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(
+    recorder,
+    Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
+  );
 
   int pixelCursor = 0;
 
@@ -45,41 +46,40 @@ Future<ui.Image> createControlPointsTextureFromContours(
 
     for (int pi = 0; pi < contour.length; pi++) {
       final point = contour[pi];
-      final pxIdx = pixelCursor * 4;
 
       // Normalise from [-1,1] to [0,1]
       final x = (point.dx + 1.0) * 0.5;
       final y = (point.dy + 1.0) * 0.5;
 
-      pixels[pxIdx] = (x * 255).round().clamp(0, 255);
-      pixels[pxIdx + 1] = (y * 255).round().clamp(0, 255);
-      pixels[pxIdx + 2] = pi == 0
+      final red = (x * 255).round().clamp(0, 255);
+      final green = (y * 255).round().clamp(0, 255);
+      final blue = pi == 0
           ? (orientationEncoded * 255).round()
           : 0; // orientation only on first point
-      pixels[pxIdx + 3] = 255; // alpha
+      final alpha = 255;
+
+      // Draw a 1x1 pixel rectangle with the exact color
+      final paint = Paint()
+        ..color = Color.fromARGB(alpha, red, green, blue)
+        ..style = PaintingStyle.fill;
+
+      canvas.drawRect(Rect.fromLTWH(pixelCursor.toDouble(), 0, 1, 1), paint);
 
       pixelCursor++;
     }
 
     // Insert separator (except after last contour)
     if (ci < contours.length - 1) {
-      final pxIdx = pixelCursor * 4;
-      pixels[pxIdx] = 0;
-      pixels[pxIdx + 1] = 0;
-      pixels[pxIdx + 2] = 255; // blue = 1.0 ➜ separator
-      pixels[pxIdx + 3] = 255;
+      final paint = Paint()
+        ..color =
+            const Color.fromARGB(255, 0, 0, 255) // blue = 1.0 ➜ separator
+        ..style = PaintingStyle.fill;
+
+      canvas.drawRect(Rect.fromLTWH(pixelCursor.toDouble(), 0, 1, 1), paint);
       pixelCursor++;
     }
   }
 
-  final completer = Completer<ui.Image>();
-  ui.decodeImageFromPixels(
-    pixels,
-    width,
-    height,
-    ui.PixelFormat.rgba8888,
-    completer.complete,
-  );
-
-  return completer.future;
+  final picture = recorder.endRecording();
+  return picture.toImageSync(width, height);
 }
