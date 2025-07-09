@@ -9,6 +9,7 @@ import 'package:flutter_shaders/flutter_shaders.dart';
 import 'package:liquid_glass_renderer/src/liquid_glass.dart';
 import 'package:liquid_glass_renderer/src/liquid_glass_settings.dart';
 import 'package:liquid_glass_renderer/src/raw_shapes.dart';
+import 'package:liquid_glass_renderer/src/shaders.dart';
 import 'package:meta/meta.dart';
 
 /// Represents a layer of multiple [LiquidGlass] shapes that can flow together
@@ -90,8 +91,7 @@ class _LiquidGlassLayerState extends State<LiquidGlassLayer>
     }
 
     return ShaderBuilder(
-      assetKey:
-          'packages/liquid_glass_renderer/lib/assets/shaders/liquid_glass.frag',
+      assetKey: liquidGlassShader,
       (context, shader, child) => _RawShapes(
         shader: shader,
         settings: widget.settings,
@@ -265,6 +265,7 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
     if (_settings.thickness <= 0) {
       _paintShapeContents(context, offset, shapes, glassContainsChild: true);
       _paintShapeContents(context, offset, shapes, glassContainsChild: false);
+      super.paint(context, offset);
       return;
     }
 
@@ -282,7 +283,7 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
       ..setFloat(8, _settings.lightIntensity)
       ..setFloat(9, _settings.ambientStrength)
       ..setFloat(10, _settings.thickness)
-      ..setFloat(11, 1.51) // refractive index
+      ..setFloat(11, _settings.refractiveIndex) // refractive index
 
       // Shape uniforms
       ..setFloat(12, shape1.type.index.toDouble())
@@ -314,7 +315,6 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
         filter: ImageFilter.shader(_shader),
       ),
       (context, offset) {
-        super.paint(context, offset);
         _paintShapeContents(
           context,
           offset,
@@ -324,6 +324,7 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
       },
       offset,
     );
+    super.paint(context, offset);
   }
 
   @override
@@ -359,7 +360,7 @@ class RenderLiquidGlassLayer extends RenderProxyBox {
     for (final (render, _) in shapes) {
       final shapeGlobalOffset = render.localToGlobal(Offset.zero);
       final relativeOffset = shapeGlobalOffset - layerGlobalOffset;
-      render.paintBlur(context, offset + relativeOffset);
+      render.paintBlur(context, offset + relativeOffset, _settings.blur);
     }
   }
 }

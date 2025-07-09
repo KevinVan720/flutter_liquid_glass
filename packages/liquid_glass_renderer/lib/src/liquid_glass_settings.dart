@@ -9,11 +9,13 @@ class LiquidGlassSettings with EquatableMixin {
   const LiquidGlassSettings({
     this.glassColor = const Color.fromARGB(0, 255, 255, 255),
     this.thickness = 20,
+    this.blur = 0,
     this.chromaticAberration = .01,
     this.blend = 20,
     this.lightAngle = 0.5 * pi,
     this.lightIntensity = 1,
     this.ambientStrength = .01,
+    this.refractiveIndex = 1.51,
   });
 
   /// The color tint of the glass effect.
@@ -25,6 +27,13 @@ class LiquidGlassSettings with EquatableMixin {
   ///
   /// Thicker surfaces refract the light more intensely.
   final double thickness;
+
+  /// The blur of the glass effect.
+  ///
+  /// Higher values create a more frosted appearance.
+  ///
+  /// Defaults to 0.
+  final double blur;
 
   /// The chromatic aberration of the glass effect (WIP).
   ///
@@ -51,14 +60,46 @@ class LiquidGlassSettings with EquatableMixin {
   /// Higher values create more pronounced ambient light.
   final double ambientStrength;
 
+  /// The strength of the refraction.
+  ///
+  /// Higher values create more pronounced refraction.
+  /// Defaults to 1.51
+  final double refractiveIndex;
+
+  /// Creates a new [LiquidGlassSettings] with the given settings.
+  LiquidGlassSettings copyWith({
+    Color? glassColor,
+    double? thickness,
+    double? blur,
+    double? chromaticAberration,
+    double? blend,
+    double? lightAngle,
+    double? lightIntensity,
+    double? ambientStrength,
+    double? refractiveIndex,
+  }) =>
+      LiquidGlassSettings(
+        glassColor: glassColor ?? this.glassColor,
+        thickness: thickness ?? this.thickness,
+        blur: blur ?? this.blur,
+        chromaticAberration: chromaticAberration ?? this.chromaticAberration,
+        blend: blend ?? this.blend,
+        lightAngle: lightAngle ?? this.lightAngle,
+        lightIntensity: lightIntensity ?? this.lightIntensity,
+        ambientStrength: ambientStrength ?? this.ambientStrength,
+        refractiveIndex: refractiveIndex ?? this.refractiveIndex,
+      );
+
   @override
   List<Object?> get props => [
         glassColor,
         thickness,
+        blur,
         chromaticAberration,
         blend,
         lightAngle,
         lightIntensity,
         ambientStrength,
+        refractiveIndex,
       ];
 }
